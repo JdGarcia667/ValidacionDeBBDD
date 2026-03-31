@@ -17,8 +17,6 @@ class MappingDialog:
         self.top.transient(parent)
         self.top.grab_set()
 
-        sv_ttk.set_theme("light")
-
         main_frame = ttk.Frame(self.top, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
 

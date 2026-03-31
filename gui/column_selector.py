@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
-import sv_ttk
+import ttkbootstrap as ttk
 
 class ColumnSelectorDialog:
     def __init__(self, parent, columnas_disponibles):
@@ -13,8 +13,7 @@ class ColumnSelectorDialog:
         self.top.transient(parent)
         self.top.grab_set()
 
-        sv_ttk.set_theme("light")
-
+        # Aplicar tema heredado
         main_frame = ttk.Frame(self.top, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -41,9 +40,10 @@ class ColumnSelectorDialog:
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=10)
 
-        ttk.Button(btn_frame, text="Aceptar", style="Accent.TButton",
+        ttk.Button(btn_frame, text="Aceptar", bootstyle="success",
                    command=self.aceptar).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Cancelar", command=self.cancelar).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancelar", bootstyle="secondary",
+                   command=self.cancelar).pack(side=tk.RIGHT, padx=5)
 
         self.center_window()
 

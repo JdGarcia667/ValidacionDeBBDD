@@ -228,14 +228,17 @@ class Validator:
         if pd.isna(entidad) or entidad == '':
             return "Entidad federativa vacía"
         if pais and 'méxico' in str(pais).lower():
-            estados_mexicanos = [
-                'AGUASCALIENTES', 'BAJA CALIFORNIA', 'BAJA CALIFORNIA SUR', 'CAMPECHE', 'COAHUILA',
-                'COLIMA', 'CHIAPAS', 'CHIHUAHUA', 'CIUDAD DE MÉXICO', 'DURANGO', 'GUANAJUATO',
-                'GUERRERO', 'HIDALGO', 'JALISCO', 'MÉXICO', 'MICHOACÁN', 'MORELOS', 'NAYARIT',
-                'NUEVO LEÓN', 'OAXACA', 'PUEBLA', 'QUERÉTARO', 'QUINTANA ROO', 'SAN LUIS POTOSÍ',
-                'SINALOA', 'SONORA', 'TABASCO', 'TAMAULIPAS', 'TLAXCALA', 'VERACRUZ', 'YUCATÁN', 'ZACATECAS', 'CDMX'
+            # Lista de estados mexicanos en formato normalizado
+            estados_mexicanos_raw = [
+                'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
+                'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
+                'Guerrero', 'Hidalgo', 'Jalisco', 'México', 'Michoacán', 'Morelos', 'Nayarit',
+                'Nuevo León', 'Oaxaca', 'Puebla', 'Querétaro', 'Quintana Roo', 'San Luis Potosí',
+                'Sinaloa', 'Sonora', 'Tabasco', 'Tamaulipas', 'Tlaxcala', 'Veracruz', 'Yucatán', 'Zacatecas', 'CDMX'
             ]
-            if str(entidad).upper() not in estados_mexicanos:
+            estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
+            entidad_norm = self._normalizar_columna(str(entidad)).upper()
+            if entidad_norm not in estados_norm:
                 return f"Entidad '{entidad}' no válida para México"
         return None
 
@@ -352,7 +355,6 @@ class Validator:
             ids = self.df[col_id].astype(str).str.strip()
             duplicados = ids[ids.duplicated(keep=False)]
             if not duplicados.empty:
-                # Seleccionar solo columnas base y el id
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_id]
                 df_dup = self.df.loc[duplicados.index, cols].copy()
@@ -371,7 +373,6 @@ class Validator:
             grupos = df_temp.groupby('curp')['nombre_norm'].nunique()
             curps_con_multiples = grupos[grupos > 1].index
             if not curps_con_multiples.empty:
-                # Obtener las filas afectadas
                 afectadas = df_temp[df_temp['curp'].isin(curps_con_multiples)].index
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_nombre, col_curp]
@@ -381,7 +382,7 @@ class Validator:
         return None
 
     # ------------------------------------------------------------------
-    # Método principal
+    # Método principal que integra todas las validaciones
     # ------------------------------------------------------------------
     def validar_todo(self):
         self._estandarizar_fechas()
@@ -396,7 +397,6 @@ class Validator:
             if col and col in self.df.columns:
                 nulos = self.df[self.df[col].isnull()].copy()
                 if not nulos.empty:
-                    # Solo tomamos columnas base y la columna que está vacía
                     base = self._obtener_columnas_base()
                     cols = list(base.values()) + [col]
                     df_nulo = nulos[cols].copy()
@@ -515,31 +515,38 @@ class Validator:
                 errores_dataframes['RFCs Invalidos'] = df_rfc
                 errores_totales += len(df_rfc)
 
-        # 9. Consistencia lugar de nacimiento
+        # 9. Consistencia lugar de nacimiento (entidad vs país) - con normalización mejorada
         col_entidad = self.col_mapping.get('entidad_federativa')
         col_pais = self.col_mapping.get('Pais_nacimiento')
         col_nacionalidad = self.col_mapping.get('Nacionalidad')
         if all(x is not None for x in [col_entidad, col_pais, col_nacionalidad]):
-            estados_mexicanos = [
-                'AGUASCALIENTES', 'BAJA CALIFORNIA', 'BAJA CALIFORNIA SUR', 'CAMPECHE', 'COAHUILA',
-                'COLIMA', 'CHIAPAS', 'CHIHUAHUA', 'CIUDAD DE MÉXICO', 'DURANGO', 'GUANAJUATO',
-                'GUERRERO', 'HIDALGO', 'JALISCO', 'MÉXICO', 'MICHOACÁN', 'MORELOS', 'NAYARIT',
-                'NUEVO LEÓN', 'OAXACA', 'PUEBLA', 'QUERÉTARO', 'QUINTANA ROO', 'SAN LUIS POTOSÍ',
-                'SINALOA', 'SONORA', 'TABASCO', 'TAMAULIPAS', 'TLAXCALA', 'VERACRUZ', 'YUCATÁN', 'ZACATECAS', 'CDMX'
+            # Lista de estados mexicanos normalizados
+            estados_mexicanos_raw = [
+                'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
+                'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
+                'Guerrero', 'Hidalgo', 'Jalisco', 'México', 'Michoacán', 'Morelos', 'Nayarit',
+                'Nuevo León', 'Oaxaca', 'Puebla', 'Querétaro', 'Quintana Roo', 'San Luis Potosí',
+                'Sinaloa', 'Sonora', 'Tabasco', 'Tamaulipas', 'Tlaxcala', 'Veracruz', 'Yucatán', 'Zacatecas', 'CDMX'
             ]
+            estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
+
             df_temp = self.df.copy()
-            df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).str.upper().str.strip()
-            inconsistentes_idx = (
-                df_temp['Entidad_norm'].isin(estados_mexicanos) &
+            # Normalizar entidad, país y nacionalidad
+            df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).apply(lambda x: self._normalizar_columna(x).upper())
+            df_temp['Pais_norm'] = df_temp[col_pais].astype(str).apply(lambda x: self._normalizar_columna(x).upper())
+            df_temp['Nacionalidad_norm'] = df_temp[col_nacionalidad].astype(str).apply(lambda x: self._normalizar_columna(x).upper())
+
+            inconsistentes = df_temp[
+                df_temp['Entidad_norm'].isin(estados_norm) &
                 (
-                    (df_temp[col_pais].astype(str).str.upper().str.strip() != 'MÉXICO') |
-                    (df_temp[col_nacionalidad].astype(str).str.upper().str.strip() != 'MEXICO')
+                    (df_temp['Pais_norm'] != 'MEXICO') |
+                    (df_temp['Nacionalidad_norm'] != 'MEXICO')
                 )
-            )
-            if inconsistentes_idx.any():
+            ].copy()
+            if not inconsistentes.empty:
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_entidad, col_pais, col_nacionalidad]
-                df_inc = self.df.loc[inconsistentes_idx, cols].copy()
+                df_inc = self.df.loc[inconsistentes.index, cols].copy()
                 df_inc['Tipo_Error'] = 'Inconsistencia en lugar de nacimiento'
                 errores_dataframes['Inconsistencias Nacimiento'] = df_inc
                 errores_totales += len(df_inc)
