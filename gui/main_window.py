@@ -5,6 +5,7 @@ from core.file_reader import FileReader
 from gui.mapping_dialog import MappingDialog
 from core.validator import Validator
 from core.report_generator import ReportGenerator
+from gui.column_selector import ColumnSelectorDialog   # Nuevo diálogo para columnas adicionales
 
 class MainWindow:
     def __init__(self, root):
@@ -13,25 +14,32 @@ class MainWindow:
         root.geometry("600x350")
         root.resizable(False, False)
 
+        # Aplicar tema moderno
         sv_ttk.set_theme("light")
 
+        # Variables
         self.file_path = tk.StringVar()
         self.df = None
         self.mapeo = None
 
+        # Estilo para botones
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Segoe UI", 11, "bold"))
 
+        # Frame principal
         main_frame = ttk.Frame(root, padding="30 20 30 20")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Título
         ttk.Label(main_frame, text="Validador de Bases de Datos de Clientes",
                   font=("Segoe UI", 16, "bold")).pack(pady=(0, 20))
 
+        # Instrucciones
         ttk.Label(main_frame, text="Selecciona un archivo con los datos de clientes.\n"
                   "Formatos soportados: Excel (.xlsx, .xls), CSV, XML",
                   font=("Segoe UI", 10), foreground="gray").pack(pady=(0, 20))
 
+        # Frame de archivo
         file_frame = ttk.Frame(main_frame)
         file_frame.pack(fill=tk.X, pady=10)
 
@@ -41,19 +49,26 @@ class MainWindow:
         browse_btn = ttk.Button(file_frame, text="📂 Examinar", command=self.browse_file)
         browse_btn.pack(side=tk.RIGHT)
 
+        # Botón de cargar
         self.load_btn = ttk.Button(main_frame, text="Cargar y Asignar columnas",
                                     style="Accent.TButton", command=self.load_file, state="disabled")
         self.load_btn.pack(pady=20, ipadx=20, ipady=5)
 
+        # Etiqueta de estado
         self.status_label = ttk.Label(main_frame, text="", font=("Segoe UI", 9))
         self.status_label.pack(pady=(0, 10))
 
+        # Barra de progreso (inicialmente oculta)
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
 
+        # Centrar ventana
         self.center_window()
+
+        # Habilitar/deshabilitar botón según haya ruta
         self.file_path.trace_add("write", self.check_file_selected)
 
     def center_window(self):
+        """Centra la ventana en la pantalla."""
         self.root.update_idletasks()
         width = self.root.winfo_width()
         height = self.root.winfo_height()
@@ -62,9 +77,11 @@ class MainWindow:
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def check_file_selected(self, *args):
+        """Habilita el botón de carga si hay una ruta seleccionada."""
         self.load_btn.config(state="normal" if self.file_path.get() else "disabled")
 
     def browse_file(self):
+        """Abre diálogo para seleccionar archivo."""
         filename = filedialog.askopenfilename(
             title="Seleccionar archivo",
             filetypes=[("Archivos soportados", "*.xlsx *.xls *.csv *.xml"), ("Todos", "*.*")]
@@ -73,6 +90,7 @@ class MainWindow:
             self.file_path.set(filename)
 
     def load_file(self):
+        """Carga el archivo seleccionado y muestra el diálogo de mapeo."""
         path = self.file_path.get()
         if not path:
             return
@@ -97,13 +115,16 @@ class MainWindow:
             self.status_label.config(text="❌ Error al cargar el archivo")
 
     def show_mapping_dialog(self):
+        """Abre el diálogo de asignación manual de columnas."""
         self.root.attributes('-disabled', True)
         dialog = MappingDialog(self.root, list(self.df.columns))
         self.root.wait_window(dialog.top)
         self.root.attributes('-disabled', False)
+
         if dialog.mapeo_confirmado:
             self.mapeo = dialog.mapeo
 
+            # Preguntar por tipo de persona si no se asignó columna
             tipo_persona_default = None
             if self.mapeo.get('tipo de persona') is None:
                 respuesta = messagebox.askyesno(
@@ -117,20 +138,32 @@ class MainWindow:
                 else:
                     tipo_persona_default = 'Moral'
 
+            # Ejecutar validaciones
             self.ejecutar_validaciones(tipo_persona_default)
         else:
             self.status_label.config(text="Mapeo cancelado por el usuario")
             self.load_btn.config(state="normal")
 
     def ejecutar_validaciones(self, tipo_persona_default=None):
+        """
+        Ejecuta todas las validaciones, muestra selector de columnas adicionales
+        y genera el reporte en Excel.
+        """
         self.status_label.config(text="Ejecutando validaciones...")
         self.progress.pack(pady=10, fill=tk.X)
         self.progress.start(10)
         self.root.update()
 
+        # Validar
         validator = Validator(self.df, self.mapeo, tipo_persona_default)
         errores_dataframes, errores_totales = validator.validar_todo()
 
+        # Preguntar por columnas adicionales para el reporte
+        selector = ColumnSelectorDialog(self.root, list(self.df.columns))
+        self.root.wait_window(selector.top)
+        columnas_adicionales = selector.columnas_seleccionadas if selector.confirmado else []
+
+        # Preguntar dónde guardar el reporte
         archivo_salida = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             filetypes=[("Archivos Excel", "*.xlsx")],
@@ -144,7 +177,14 @@ class MainWindow:
             self.load_btn.config(state="normal")
             return
 
-        ReportGenerator.generar_reporte(errores_dataframes, self.df, self.mapeo, archivo_salida)
+        # Generar reporte
+        ReportGenerator.generar_reporte(
+            errores_dataframes,
+            self.df,
+            self.mapeo,
+            archivo_salida,
+            columnas_adicionales
+        )
 
         self.progress.stop()
         self.progress.pack_forget()
