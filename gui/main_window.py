@@ -1,6 +1,17 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import sv_ttk
+
+try:
+    import sv_ttk
+    SV_TTK_AVAILABLE = True
+except ModuleNotFoundError:
+    sv_ttk = None
+    SV_TTK_AVAILABLE = False
+    try:
+        from ttkbootstrap import Style
+    except ModuleNotFoundError:
+        Style = None
+
 from core.file_reader import FileReader
 from gui.mapping_dialog import MappingDialog
 from core.validator import Validator
@@ -15,7 +26,13 @@ class MainWindow:
         root.resizable(False, False)
 
         # Aplicar tema moderno
-        sv_ttk.set_theme("light")
+        if SV_TTK_AVAILABLE:
+            sv_ttk.set_theme("light")
+        elif Style is not None:
+            Style(theme="flatly")
+        else:
+            # Ninguna librería de tema disponible; se usa tema ttk por defecto
+            pass
 
         # Variables
         self.file_path = tk.StringVar()

@@ -1,0 +1,1 @@
+sv_ttk\nttkbootstrap\npandas\nopenpyxl\nlxml
