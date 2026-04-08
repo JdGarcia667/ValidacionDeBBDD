@@ -70,6 +70,21 @@ class Validator:
                 base[campo] = real
         return base
 
+    # Nuevas funciones auxiliares para normalización de país y entidad
+    def _es_mexicano(self, texto):
+        """Determina si un texto (país o nacionalidad) se refiere a México."""
+        if pd.isna(texto) or texto == '':
+            return False
+        texto_norm = self._normalizar_columna(str(texto)).upper()
+        variantes_mexico = {'MEXICO', 'MEXICANA', 'MEX', 'MX'}
+        return texto_norm in variantes_mexico
+
+    def _normalizar_entidad(self, entidad):
+        """Normaliza una entidad federativa para comparación."""
+        if pd.isna(entidad) or entidad == '':
+            return ''
+        return self._normalizar_columna(str(entidad)).upper()
+
     # ------------------------------------------------------------------
     # Conversión de fechas
     # ------------------------------------------------------------------
@@ -227,8 +242,8 @@ class Validator:
         pais = self._get_valor(row, 'Pais_nacimiento')
         if pd.isna(entidad) or entidad == '':
             return "Entidad federativa vacía"
-        if pais and 'méxico' in str(pais).lower():
-            # Lista de estados mexicanos en formato normalizado
+        # Si el país es México (según la nueva función)
+        if self._es_mexicano(pais):
             estados_mexicanos_raw = [
                 'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
                 'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
@@ -515,12 +530,11 @@ class Validator:
                 errores_dataframes['RFCs Invalidos'] = df_rfc
                 errores_totales += len(df_rfc)
 
-        # 9. Consistencia lugar de nacimiento (entidad vs país) - con normalización mejorada
+        # 9. Consistencia lugar de nacimiento (entidad vs país)
         col_entidad = self.col_mapping.get('entidad_federativa')
         col_pais = self.col_mapping.get('Pais_nacimiento')
         col_nacionalidad = self.col_mapping.get('Nacionalidad')
         if all(x is not None for x in [col_entidad, col_pais, col_nacionalidad]):
-            # Lista de estados mexicanos normalizados
             estados_mexicanos_raw = [
                 'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
                 'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
@@ -531,18 +545,15 @@ class Validator:
             estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
 
             df_temp = self.df.copy()
-            # Normalizar entidad, país y nacionalidad
-            df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).apply(lambda x: self._normalizar_columna(x).upper())
-            df_temp['Pais_norm'] = df_temp[col_pais].astype(str).apply(lambda x: self._normalizar_columna(x).upper())
-            df_temp['Nacionalidad_norm'] = df_temp[col_nacionalidad].astype(str).apply(lambda x: self._normalizar_columna(x).upper())
+            df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).apply(self._normalizar_entidad)
+            df_temp['Pais_es_mexico'] = df_temp[col_pais].apply(self._es_mexicano)
+            df_temp['Nacionalidad_es_mexico'] = df_temp[col_nacionalidad].apply(self._es_mexicano)
 
             inconsistentes = df_temp[
                 df_temp['Entidad_norm'].isin(estados_norm) &
-                (
-                    (df_temp['Pais_norm'] != 'MEXICO') |
-                    (df_temp['Nacionalidad_norm'] != 'MEXICO')
-                )
+                (~df_temp['Pais_es_mexico'] | ~df_temp['Nacionalidad_es_mexico'])
             ].copy()
+
             if not inconsistentes.empty:
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_entidad, col_pais, col_nacionalidad]
