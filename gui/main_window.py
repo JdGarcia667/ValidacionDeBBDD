@@ -1,20 +1,26 @@
+import logging
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
+
+import pandas as pd
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-import pandas as pd
+
 from core.file_reader import FileReader
 from core.multi_file_loader import MultiFileLoader
+from core.report_generator import ReportGenerator
 from core.sqlite_validator import SQLiteValidator
 from core.sqlite_validator_operaciones import SQLiteValidatorOperaciones
-from gui.mapping_dialog import MappingDialog
-from gui.mapping_dialog_operaciones import MappingDialogOperaciones
+from core.utils import validar_nombre_tabla
 from core.validator import Validator
 from core.validator_operaciones import ValidatorOperaciones
-from core.report_generator import ReportGenerator
 from gui.column_selector import ColumnSelectorDialog
 from gui.config_operaciones import ConfigOperacionesDialog
+from gui.mapping_dialog import MappingDialog
+from gui.mapping_dialog_operaciones import MappingDialogOperaciones
+
+logger = logging.getLogger(__name__)
 
 class MainWindow:
     def __init__(self, root):
@@ -152,7 +158,9 @@ class MainWindow:
         if self.db_path:
             import sqlite3
             conn = sqlite3.connect(self.db_path)
-            muestra = pd.read_sql_query(f"SELECT * FROM {self.table_name} LIMIT 1", conn)
+            muestra = pd.read_sql_query(
+                f"SELECT * FROM {validar_nombre_tabla(self.table_name)} LIMIT 1", conn
+            )
             columnas = list(muestra.columns)
             conn.close()
         else:
@@ -229,7 +237,7 @@ class MainWindow:
                 os.remove(self.db_path)
                 self.db_path = None
             except Exception as e:
-                print(f"No se pudo eliminar {self.db_path}: {e}")
+                logger.warning("No se pudo eliminar archivo temporal '%s': %s", self.db_path, e)
 
         self.status_label.config(text=f"✅ Reporte guardado: {archivo_salida}")
         self.load_btn.config(state="normal")
@@ -296,7 +304,7 @@ class MainWindow:
                 os.remove(self.db_path)
                 self.db_path = None
             except Exception as e:
-                print(f"No se pudo eliminar {self.db_path}: {e}")
+                logger.warning("No se pudo eliminar archivo temporal '%s': %s", self.db_path, e)
 
         self.status_label.config(text=f"✅ Reporte guardado: {archivo_salida}")
         self.load_btn.config(state="normal")

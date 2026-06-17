@@ -187,7 +187,7 @@ class ConfigOperacionesDialog:
             return
         try:
             val_num = float(val)
-        except:
+        except ValueError:
             messagebox.showerror("Error", "El valor debe ser numérico.")
             return
         self.filtros.append((op, val_num))

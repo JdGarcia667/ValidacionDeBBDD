@@ -1,26 +1,37 @@
+import logging
 import pandas as pd
 import re
 from datetime import datetime, date
 
-class Validator:
-    """
-    Clase que realiza todas las validaciones sobre un DataFrame de clientes.
-    """
+from core.utils import (
+    normalizar_texto,
+    ESTADOS_MEXICANOS_NORM,
+    TELEFONO_MIN_DIGITOS,
+    DIRECCION_MIN_SEPARADORES,
+    YEAR_CORTE_SIGLO,
+)
 
-    # Columnas base que siempre se incluyen en los DataFrames de error
+logger = logging.getLogger(__name__)
+
+
+class Validator:
+    """Realiza todas las validaciones sobre un DataFrame de clientes."""
+
     COLUMNAS_BASE = ['id_cliente', 'nombre', 'estatus_cliente', 'tipo de persona', 'CURP']
 
-    def __init__(self, df, mapeo, tipo_persona_default=None):
+    # Variantes de texto que se reconocen como México
+    _VARIANTES_MEXICO = {'MEXICO', 'MEXICANA', 'MEX', 'MX'}
+
+    def __init__(self, df: pd.DataFrame, mapeo: dict, tipo_persona_default: str | None = None):
         self.df = df
         self.mapeo = mapeo
         self.tipo_persona_default = tipo_persona_default
 
-        # Normalización de columnas reales del DataFrame
-        self.real_columns = {self._normalizar_columna(c): c for c in self.df.columns}
+        self.real_columns = {normalizar_texto(c): c for c in self.df.columns}
         self.col_mapping = {}
         for campo, col_mapeada in self.mapeo.items():
             if col_mapeada:
-                col_norm = self._normalizar_columna(col_mapeada)
+                col_norm = normalizar_texto(col_mapeada)
                 self.col_mapping[campo] = self.real_columns.get(col_norm)
             else:
                 self.col_mapping[campo] = None
@@ -28,13 +39,11 @@ class Validator:
         self.col_id = self.col_mapping.get('id_cliente')
         self.tiene_id = self.col_id is not None
 
-        # Columnas críticas (para celdas vacías)
         self.columnas_criticas = [
             'id_cliente', 'nombre', 'fecha_nacimiento', 'fecha_inicio_relacion',
             'Dirección', 'genero', 'Actividad_especifica', 'Correo electronico'
         ]
 
-        # Columnas de fecha
         self.columnas_fecha = [
             'fecha_nacimiento', 'fecha_inicio_relacion', 'fecha_termino_relacion', 'fecha_riesgo'
         ]
@@ -42,26 +51,13 @@ class Validator:
     # ------------------------------------------------------------------
     # Métodos auxiliares
     # ------------------------------------------------------------------
-    def _normalizar_columna(self, nombre):
-        if not isinstance(nombre, str):
-            return ""
-        nombre = nombre.lower().strip()
-        nombre = re.sub(r'[áàäâ]', 'a', nombre)
-        nombre = re.sub(r'[éèëê]', 'e', nombre)
-        nombre = re.sub(r'[íìïî]', 'i', nombre)
-        nombre = re.sub(r'[óòöô]', 'o', nombre)
-        nombre = re.sub(r'[úùüû]', 'u', nombre)
-        nombre = re.sub(r'[^a-z0-9\s]', '', nombre)
-        nombre = re.sub(r'\s+', ' ', nombre)
-        return nombre
-
     def _get_valor(self, row, campo):
         col = self.col_mapping.get(campo)
         if col and col in self.df.columns:
             return row[col]
         return None
 
-    def _obtener_columnas_base(self):
+    def _obtener_columnas_base(self) -> dict:
         """Devuelve un dict con los nombres reales de las columnas base que existen."""
         base = {}
         for campo in self.COLUMNAS_BASE:
@@ -70,20 +66,16 @@ class Validator:
                 base[campo] = real
         return base
 
-    # Nuevas funciones auxiliares para normalización de país y entidad
-    def _es_mexicano(self, texto):
+    def _es_mexicano(self, texto) -> bool:
         """Determina si un texto (país o nacionalidad) se refiere a México."""
         if pd.isna(texto) or texto == '':
             return False
-        texto_norm = self._normalizar_columna(str(texto)).upper()
-        variantes_mexico = {'MEXICO', 'MEXICANA', 'MEX', 'MX'}
-        return texto_norm in variantes_mexico
+        return normalizar_texto(str(texto)).upper() in self._VARIANTES_MEXICO
 
-    def _normalizar_entidad(self, entidad):
-        """Normaliza una entidad federativa para comparación."""
+    def _normalizar_entidad(self, entidad) -> str:
         if pd.isna(entidad) or entidad == '':
             return ''
-        return self._normalizar_columna(str(entidad)).upper()
+        return normalizar_texto(str(entidad)).upper()
 
     # ------------------------------------------------------------------
     # Conversión de fechas
@@ -99,13 +91,10 @@ class Validator:
                 mes = int(numeros[1])
                 año = int(numeros[2])
                 if año < 100:
-                    if año > 50:
-                        año += 1900
-                    else:
-                        año += 2000
+                    año += 2000 if año <= YEAR_CORTE_SIGLO else 1900
                 if 1 <= mes <= 12 and 1 <= dia <= 31 and 1900 <= año <= 2100:
                     return pd.Timestamp(year=año, month=mes, day=dia)
-        except:
+        except (ValueError, TypeError):
             pass
         return pd.NaT
 
@@ -149,7 +138,7 @@ class Validator:
                 return f"Edad {edad} años menor a 18"
             elif edad > 120:
                 return f"Edad {edad} años mayor a 120"
-        except:
+        except (ValueError, TypeError):
             return "Fecha no procesable"
         return None
 
@@ -184,7 +173,7 @@ class Validator:
             f_ini = pd.to_datetime(fecha_inicio, errors='coerce')
             if pd.isna(f_ini):
                 return "Fecha inicio inválida"
-        except:
+        except (ValueError, TypeError):
             return "Fecha inicio inválida"
 
         if not (pd.isna(fecha_termino) or fecha_termino == ''):
@@ -194,7 +183,7 @@ class Validator:
                     return "Fecha término inválida"
                 if f_ter < f_ini:
                     return "Fecha término anterior a fecha inicio"
-            except:
+            except (ValueError, TypeError):
                 return "Fecha término inválida"
 
         if estatus and isinstance(estatus, str) and 'activo' in estatus.lower():
@@ -215,7 +204,7 @@ class Validator:
         try:
             if pd.isna(pd.to_datetime(valor, errors='coerce')):
                 return "Fecha de riesgo inválida"
-        except:
+        except (ValueError, TypeError):
             return "Fecha de riesgo inválida"
         return None
 
@@ -242,18 +231,9 @@ class Validator:
         pais = self._get_valor(row, 'Pais_nacimiento')
         if pd.isna(entidad) or entidad == '':
             return "Entidad federativa vacía"
-        # Si el país es México (según la nueva función)
         if self._es_mexicano(pais):
-            estados_mexicanos_raw = [
-                'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
-                'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
-                'Guerrero', 'Hidalgo', 'Jalisco', 'México', 'Michoacán', 'Morelos', 'Nayarit',
-                'Nuevo León', 'Oaxaca', 'Puebla', 'Querétaro', 'Quintana Roo', 'San Luis Potosí',
-                'Sinaloa', 'Sonora', 'Tabasco', 'Tamaulipas', 'Tlaxcala', 'Veracruz', 'Yucatán', 'Zacatecas', 'CDMX'
-            ]
-            estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
-            entidad_norm = self._normalizar_columna(str(entidad)).upper()
-            if entidad_norm not in estados_norm:
+            entidad_norm = normalizar_texto(str(entidad)).upper()
+            if entidad_norm not in ESTADOS_MEXICANOS_NORM:
                 return f"Entidad '{entidad}' no válida para México"
         return None
 
@@ -269,8 +249,8 @@ class Validator:
         if pd.isna(valor) or valor == '':
             return "Teléfono vacío"
         telefono_limpio = re.sub(r'\D', '', str(valor))
-        if len(telefono_limpio) < 10:
-            return f"Teléfono con {len(telefono_limpio)} dígitos, mínimo 10"
+        if len(telefono_limpio) < TELEFONO_MIN_DIGITOS:
+            return f"Teléfono con {len(telefono_limpio)} dígitos, mínimo {TELEFONO_MIN_DIGITOS}"
         if re.search(r'(\d)\1{4}', telefono_limpio):
             return "Teléfono con 5 dígitos consecutivos repetidos"
         return None
@@ -300,14 +280,13 @@ class Validator:
             errors.append("Caracteres no permitidos")
         if errors:
             return "; ".join(errors)
-        # Validar género
         col_genero = self.col_mapping.get('genero')
         if col_genero and col_genero in self.df.columns:
             gender_data = str(row[col_genero]).strip().upper()
             expected = ''
             if gender_data in ['MALE', 'M', 'HOMBRE', 'H']:
                 expected = 'H'
-            elif gender_data in ['FEMALE', 'F', 'MUJER', 'M']:
+            elif gender_data in ['FEMALE', 'F', 'MUJER']:
                 expected = 'M'
             if expected and curp[10] != expected:
                 errors.append(f"Error Género: Esperado '{expected}', Obtenido '{curp[10]}'")
@@ -351,8 +330,8 @@ class Validator:
         if pd.isna(valor) or valor == '':
             return "Dirección vacía"
         direc = str(valor)
-        if direc.count(' ') + direc.count(',') < 5:
-            return "Dirección muy corta (menos de 5 separadores)"
+        if direc.count(' ') + direc.count(',') < DIRECCION_MIN_SEPARADORES:
+            return f"Dirección muy corta (menos de {DIRECCION_MIN_SEPARADORES} separadores)"
         return None
 
     def _validar_nivel_cuenta(self, row):
@@ -397,9 +376,9 @@ class Validator:
         return None
 
     # ------------------------------------------------------------------
-    # Método principal que integra todas las validaciones
+    # Método principal
     # ------------------------------------------------------------------
-    def validar_todo(self):
+    def validar_todo(self) -> tuple[dict, int]:
         self._estandarizar_fechas()
         errores_dataframes = {}
         errores_totales = 0
@@ -458,7 +437,6 @@ class Validator:
         if col_nac and col_nac in self.df.columns and self.df[col_nac].dtype == 'datetime64[ns]':
             df_temp = self.df.copy()
             df_temp['Edad'] = (current_date - df_temp[col_nac]).dt.days / 365.25
-            # Irrealistas
             irrealistas_idx = ((df_temp['Edad'] > 100) | (df_temp['Edad'] < 0)) & df_temp[col_nac].notna()
             if irrealistas_idx.any():
                 base = self._obtener_columnas_base()
@@ -468,7 +446,6 @@ class Validator:
                 df_irr['Tipo_Error'] = 'Edad irrealista'
                 errores_dataframes['Edades Irrealistas'] = df_irr
                 errores_totales += len(df_irr)
-            # Menores
             menores_idx = df_temp['Edad'] < 18
             if menores_idx.any():
                 base = self._obtener_columnas_base()
@@ -479,13 +456,13 @@ class Validator:
                 errores_dataframes['Menores de 18 Años'] = df_men
                 errores_totales += len(df_men)
 
-        # 6. Teléfonos (10 dígitos)
+        # 6. Teléfonos
         col_tel = self.col_mapping.get('Teléfono')
         if col_tel and col_tel in self.df.columns:
             df_temp = self.df.copy()
             df_temp['Telefono_cleaned'] = df_temp[col_tel].astype(str).str.replace(r'[^0-9]', '', regex=True)
             invalidos_idx = (
-                (df_temp['Telefono_cleaned'].str.len() != 10) &
+                (df_temp['Telefono_cleaned'].str.len() != TELEFONO_MIN_DIGITOS) &
                 (df_temp['Telefono_cleaned'] != '') &
                 (df_temp['Telefono_cleaned'] != 'nan')
             )
@@ -508,9 +485,7 @@ class Validator:
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_curp]
                 df_curp = self.df.loc[curps_invalidos_idx, cols].copy()
-                df_curp['CURP_Validation_Errors'] = df_temp.loc[curps_invalidos_idx, 'CURP_Validation_Errors']
-                df_curp['Tipo_Error'] = df_curp['CURP_Validation_Errors']
-                df_curp = df_curp.drop(columns=['CURP_Validation_Errors'])
+                df_curp['Tipo_Error'] = df_temp.loc[curps_invalidos_idx, 'CURP_Validation_Errors']
                 errores_dataframes['CURPs Invalidos'] = df_curp
                 errores_totales += len(df_curp)
 
@@ -524,33 +499,22 @@ class Validator:
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_rfc]
                 df_rfc = self.df.loc[rfcs_invalidos_idx, cols].copy()
-                df_rfc['RFC_Validation_Errors'] = df_temp.loc[rfcs_invalidos_idx, 'RFC_Validation_Errors']
-                df_rfc['Tipo_Error'] = df_rfc['RFC_Validation_Errors']
-                df_rfc = df_rfc.drop(columns=['RFC_Validation_Errors'])
+                df_rfc['Tipo_Error'] = df_temp.loc[rfcs_invalidos_idx, 'RFC_Validation_Errors']
                 errores_dataframes['RFCs Invalidos'] = df_rfc
                 errores_totales += len(df_rfc)
 
-        # 9. Consistencia lugar de nacimiento (entidad vs país)
+        # 9. Consistencia lugar de nacimiento
         col_entidad = self.col_mapping.get('entidad_federativa')
         col_pais = self.col_mapping.get('Pais_nacimiento')
         col_nacionalidad = self.col_mapping.get('Nacionalidad')
         if all(x is not None for x in [col_entidad, col_pais, col_nacionalidad]):
-            estados_mexicanos_raw = [
-                'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
-                'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
-                'Guerrero', 'Hidalgo', 'Jalisco', 'México', 'Michoacán', 'Morelos', 'Nayarit',
-                'Nuevo León', 'Oaxaca', 'Puebla', 'Querétaro', 'Quintana Roo', 'San Luis Potosí',
-                'Sinaloa', 'Sonora', 'Tabasco', 'Tamaulipas', 'Tlaxcala', 'Veracruz', 'Yucatán', 'Zacatecas', 'CDMX'
-            ]
-            estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
-
             df_temp = self.df.copy()
             df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).apply(self._normalizar_entidad)
             df_temp['Pais_es_mexico'] = df_temp[col_pais].apply(self._es_mexicano)
             df_temp['Nacionalidad_es_mexico'] = df_temp[col_nacionalidad].apply(self._es_mexicano)
 
             inconsistentes = df_temp[
-                df_temp['Entidad_norm'].isin(estados_norm) &
+                df_temp['Entidad_norm'].isin(ESTADOS_MEXICANOS_NORM) &
                 (~df_temp['Pais_es_mexico'] | ~df_temp['Nacionalidad_es_mexico'])
             ].copy()
 
@@ -607,4 +571,5 @@ class Validator:
             errores_dataframes['Otros Errores'] = df_otros
             errores_totales += len(df_otros)
 
+        logger.info("Validación completada: %d errores encontrados", errores_totales)
         return errores_dataframes, errores_totales

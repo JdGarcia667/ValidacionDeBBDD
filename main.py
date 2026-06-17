@@ -1,9 +1,26 @@
+import logging
 import tkinter as tk
-from gui.main_window import MainWindow
-from gui.splash_screen import SplashScreen
+
 import ttkbootstrap as ttk
 
+from gui.main_window import MainWindow
+from gui.splash_screen import SplashScreen
+
+
+def _configurar_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler("validador.log", encoding="utf-8"),
+        ],
+    )
+
+
 def main():
+    _configurar_logging()
     # Crear ventana raíz de ttkbootstrap (tema moderno)
     root = ttk.Window(themename="superhero")  # Puedes cambiar el tema
     root.title("Validador de Clientes")
