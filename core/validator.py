@@ -1,26 +1,37 @@
+import logging
 import pandas as pd
 import re
 from datetime import datetime, date
 
-class Validator:
-    """
-    Clase que realiza todas las validaciones sobre un DataFrame de clientes.
-    """
+from core.utils import (
+    normalizar_texto,
+    ESTADOS_MEXICANOS_NORM,
+    TELEFONO_MIN_DIGITOS,
+    DIRECCION_MIN_SEPARADORES,
+    YEAR_CORTE_SIGLO,
+)
 
-    # Columnas base que siempre se incluyen en los DataFrames de error
+logger = logging.getLogger(__name__)
+
+
+class Validator:
+    """Realiza todas las validaciones sobre un DataFrame de clientes."""
+
     COLUMNAS_BASE = ['id_cliente', 'nombre', 'estatus_cliente', 'tipo de persona', 'CURP']
 
-    def __init__(self, df, mapeo, tipo_persona_default=None):
+    # Variantes de texto que se reconocen como México
+    _VARIANTES_MEXICO = {'MEXICO', 'MEXICANA', 'MEX', 'MX'}
+
+    def __init__(self, df: pd.DataFrame, mapeo: dict, tipo_persona_default: str | None = None):
         self.df = df
         self.mapeo = mapeo
         self.tipo_persona_default = tipo_persona_default
 
-        # Normalización de columnas reales del DataFrame
-        self.real_columns = {self._normalizar_columna(c): c for c in self.df.columns}
+        self.real_columns = {normalizar_texto(c): c for c in self.df.columns}
         self.col_mapping = {}
         for campo, col_mapeada in self.mapeo.items():
             if col_mapeada:
-                col_norm = self._normalizar_columna(col_mapeada)
+                col_norm = normalizar_texto(col_mapeada)
                 self.col_mapping[campo] = self.real_columns.get(col_norm)
             else:
                 self.col_mapping[campo] = None
@@ -28,13 +39,11 @@ class Validator:
         self.col_id = self.col_mapping.get('id_cliente')
         self.tiene_id = self.col_id is not None
 
-        # Columnas críticas (para celdas vacías)
         self.columnas_criticas = [
             'id_cliente', 'nombre', 'fecha_nacimiento', 'fecha_inicio_relacion',
             'Dirección', 'genero', 'Actividad_especifica', 'Correo electronico'
         ]
 
-        # Columnas de fecha
         self.columnas_fecha = [
             'fecha_nacimiento', 'fecha_inicio_relacion', 'fecha_termino_relacion', 'fecha_riesgo'
         ]
@@ -42,26 +51,13 @@ class Validator:
     # ------------------------------------------------------------------
     # Métodos auxiliares
     # ------------------------------------------------------------------
-    def _normalizar_columna(self, nombre):
-        if not isinstance(nombre, str):
-            return ""
-        nombre = nombre.lower().strip()
-        nombre = re.sub(r'[áàäâ]', 'a', nombre)
-        nombre = re.sub(r'[éèëê]', 'e', nombre)
-        nombre = re.sub(r'[íìïî]', 'i', nombre)
-        nombre = re.sub(r'[óòöô]', 'o', nombre)
-        nombre = re.sub(r'[úùüû]', 'u', nombre)
-        nombre = re.sub(r'[^a-z0-9\s]', '', nombre)
-        nombre = re.sub(r'\s+', ' ', nombre)
-        return nombre
-
     def _get_valor(self, row, campo):
         col = self.col_mapping.get(campo)
         if col and col in self.df.columns:
             return row[col]
         return None
 
-    def _obtener_columnas_base(self):
+    def _obtener_columnas_base(self) -> dict:
         """Devuelve un dict con los nombres reales de las columnas base que existen."""
         base = {}
         for campo in self.COLUMNAS_BASE:
@@ -70,20 +66,56 @@ class Validator:
                 base[campo] = real
         return base
 
-    # Nuevas funciones auxiliares para normalización de país y entidad
-    def _es_mexicano(self, texto):
+    def _es_mexicano(self, texto) -> bool:
         """Determina si un texto (país o nacionalidad) se refiere a México."""
         if pd.isna(texto) or texto == '':
             return False
-        texto_norm = self._normalizar_columna(str(texto)).upper()
-        variantes_mexico = {'MEXICO', 'MEXICANA', 'MEX', 'MX'}
-        return texto_norm in variantes_mexico
+        return normalizar_texto(str(texto)).upper() in self._VARIANTES_MEXICO
 
-    def _normalizar_entidad(self, entidad):
-        """Normaliza una entidad federativa para comparación."""
+    def _normalizar_entidad(self, entidad) -> str:
         if pd.isna(entidad) or entidad == '':
             return ''
-        return self._normalizar_columna(str(entidad)).upper()
+        return normalizar_texto(str(entidad)).upper()
+
+    # ------------------------------------------------------------------
+    # Tipo de persona (física / moral)
+    # ------------------------------------------------------------------
+    def _es_moral_row(self, row) -> bool:
+        """True si la fila es persona moral.
+
+        Si no hay valor de 'tipo de persona' se usa el default; si tampoco hay
+        default, se asume FÍSICA (no moral), para no dejar pasar validaciones.
+        """
+        valor = self._get_valor(row, 'tipo de persona')
+        if valor is None or pd.isna(valor) or str(valor).strip() == '':
+            valor = self.tipo_persona_default
+        return bool(valor) and 'moral' in str(valor).lower()
+
+    def _serie_es_moral(self) -> pd.Series:
+        """Serie booleana (alineada al índice del df): True = persona moral.
+
+        Mismo criterio que _es_moral_row pero vectorizado para las validaciones
+        que operan sobre todo el DataFrame. Desconocido -> física (False).
+        """
+        default_moral = (bool(self.tipo_persona_default)
+                         and 'moral' in self.tipo_persona_default.lower())
+        col = self.col_mapping.get('tipo de persona')
+        if not col or col not in self.df.columns:
+            return pd.Series(default_moral, index=self.df.index)
+        serie = self.df[col]
+        es_moral = serie.astype(str).str.lower().str.contains('moral', na=False)
+        if default_moral:
+            vacias = serie.isna() | serie.astype(str).str.strip().str.lower().isin(
+                ['', 'nan', 'none', 'null'])
+            es_moral = es_moral | vacias
+        return es_moral
+
+    def _etiqueta_fecha_nac(self, index, es_moral) -> pd.Series:
+        """Nombre legible del campo de nacimiento por fila: 'fecha de constitución'
+        para persona moral y 'fecha_nacimiento' para física. Se usa en las hojas
+        vectorizadas, donde una misma hoja mezcla filas de ambos tipos."""
+        return es_moral.loc[index].map(
+            lambda m: 'fecha de constitución' if m else 'fecha_nacimiento')
 
     # ------------------------------------------------------------------
     # Conversión de fechas
@@ -99,13 +131,10 @@ class Validator:
                 mes = int(numeros[1])
                 año = int(numeros[2])
                 if año < 100:
-                    if año > 50:
-                        año += 1900
-                    else:
-                        año += 2000
+                    año += 2000 if año <= YEAR_CORTE_SIGLO else 1900
                 if 1 <= mes <= 12 and 1 <= dia <= 31 and 1900 <= año <= 2100:
                     return pd.Timestamp(year=año, month=mes, day=dia)
-        except:
+        except (ValueError, TypeError):
             pass
         return pd.NaT
 
@@ -128,6 +157,10 @@ class Validator:
         valor = self._get_valor(row, 'nombre')
         if pd.isna(valor) or valor == '':
             return "Nombre vacío"
+        # El requisito de "nombre + apellido" (al menos un espacio) aplica solo a
+        # persona física; una razón social de persona moral puede ser una sola palabra.
+        if self._es_moral_row(row):
+            return None
         if valor.count(' ') < 1:
             return "Nombre incompleto (debe tener al menos un espacio)"
         return None
@@ -137,23 +170,33 @@ class Validator:
         if not col or col not in self.df.columns:
             return None
         valor = row[col]
+        es_moral = self._es_moral_row(row)
+        etiqueta = "Fecha de constitución" if es_moral else "Fecha de nacimiento"
         if pd.isna(valor) or valor == '':
-            return "Fecha de nacimiento vacía"
+            return f"{etiqueta} vacía"
         try:
             fecha = pd.to_datetime(valor, errors='coerce')
             if pd.isna(fecha):
                 return "Fecha inválida"
+            # Los límites de edad (18-120 años) aplican solo a persona física.
+            # Para persona moral la fecha es de constitución: basta con que sea
+            # válida y no futura (la futura la detecta la sección 'Fechas Futuras').
+            if es_moral:
+                return None
             hoy = date.today()
             edad = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
             if edad < 18:
                 return f"Edad {edad} años menor a 18"
             elif edad > 120:
                 return f"Edad {edad} años mayor a 120"
-        except:
+        except (ValueError, TypeError):
             return "Fecha no procesable"
         return None
 
     def _validar_genero(self, row):
+        # Las personas morales no tienen género.
+        if self._es_moral_row(row):
+            return None
         valor = self._get_valor(row, 'genero')
         if pd.isna(valor) or valor == '':
             return "Género vacío"
@@ -184,7 +227,7 @@ class Validator:
             f_ini = pd.to_datetime(fecha_inicio, errors='coerce')
             if pd.isna(f_ini):
                 return "Fecha inicio inválida"
-        except:
+        except (ValueError, TypeError):
             return "Fecha inicio inválida"
 
         if not (pd.isna(fecha_termino) or fecha_termino == ''):
@@ -194,7 +237,7 @@ class Validator:
                     return "Fecha término inválida"
                 if f_ter < f_ini:
                     return "Fecha término anterior a fecha inicio"
-            except:
+            except (ValueError, TypeError):
                 return "Fecha término inválida"
 
         if estatus and isinstance(estatus, str) and 'activo' in estatus.lower():
@@ -215,7 +258,7 @@ class Validator:
         try:
             if pd.isna(pd.to_datetime(valor, errors='coerce')):
                 return "Fecha de riesgo inválida"
-        except:
+        except (ValueError, TypeError):
             return "Fecha de riesgo inválida"
         return None
 
@@ -242,18 +285,9 @@ class Validator:
         pais = self._get_valor(row, 'Pais_nacimiento')
         if pd.isna(entidad) or entidad == '':
             return "Entidad federativa vacía"
-        # Si el país es México (según la nueva función)
         if self._es_mexicano(pais):
-            estados_mexicanos_raw = [
-                'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
-                'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
-                'Guerrero', 'Hidalgo', 'Jalisco', 'México', 'Michoacán', 'Morelos', 'Nayarit',
-                'Nuevo León', 'Oaxaca', 'Puebla', 'Querétaro', 'Quintana Roo', 'San Luis Potosí',
-                'Sinaloa', 'Sonora', 'Tabasco', 'Tamaulipas', 'Tlaxcala', 'Veracruz', 'Yucatán', 'Zacatecas', 'CDMX'
-            ]
-            estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
-            entidad_norm = self._normalizar_columna(str(entidad)).upper()
-            if entidad_norm not in estados_norm:
+            entidad_norm = normalizar_texto(str(entidad)).upper()
+            if entidad_norm not in ESTADOS_MEXICANOS_NORM:
                 return f"Entidad '{entidad}' no válida para México"
         return None
 
@@ -269,8 +303,8 @@ class Validator:
         if pd.isna(valor) or valor == '':
             return "Teléfono vacío"
         telefono_limpio = re.sub(r'\D', '', str(valor))
-        if len(telefono_limpio) < 10:
-            return f"Teléfono con {len(telefono_limpio)} dígitos, mínimo 10"
+        if len(telefono_limpio) < TELEFONO_MIN_DIGITOS:
+            return f"Teléfono con {len(telefono_limpio)} dígitos, mínimo {TELEFONO_MIN_DIGITOS}"
         if re.search(r'(\d)\1{4}', telefono_limpio):
             return "Teléfono con 5 dígitos consecutivos repetidos"
         return None
@@ -282,9 +316,6 @@ class Validator:
         if '@' not in str(valor):
             return "Correo sin @"
         return None
-
-    def _validar_curp(self, row):
-        return self._validate_curp_row(row)
 
     def _validate_curp_row(self, row):
         col_curp = self.col_mapping.get('CURP')
@@ -300,33 +331,17 @@ class Validator:
             errors.append("Caracteres no permitidos")
         if errors:
             return "; ".join(errors)
-        # Validar género
         col_genero = self.col_mapping.get('genero')
         if col_genero and col_genero in self.df.columns:
             gender_data = str(row[col_genero]).strip().upper()
             expected = ''
             if gender_data in ['MALE', 'M', 'HOMBRE', 'H']:
                 expected = 'H'
-            elif gender_data in ['FEMALE', 'F', 'MUJER', 'M']:
+            elif gender_data in ['FEMALE', 'F', 'MUJER']:
                 expected = 'M'
             if expected and curp[10] != expected:
                 errors.append(f"Error Género: Esperado '{expected}', Obtenido '{curp[10]}'")
         return "; ".join(errors) if errors else None
-
-    def _validar_rfc(self, row):
-        rfc_error = self._validate_rfc_row(row)
-        if rfc_error:
-            return rfc_error
-        tipo_persona = self._get_valor(row, 'tipo de persona')
-        if pd.isna(tipo_persona) or tipo_persona == '':
-            tipo_persona = self.tipo_persona_default
-        if tipo_persona:
-            rfc = str(self._get_valor(row, 'RFC')).strip().upper()
-            if 'física' in tipo_persona.lower() and len(rfc) != 13:
-                return "RFC física debe tener 13 caracteres"
-            elif 'moral' in tipo_persona.lower() and len(rfc) != 12:
-                return "RFC moral debe tener 12 caracteres"
-        return None
 
     def _validate_rfc_row(self, row):
         col_rfc = self.col_mapping.get('RFC')
@@ -335,15 +350,22 @@ class Validator:
         rfc = str(row[col_rfc]).strip().upper()
         if rfc in ['NAN', '', 'NONE', 'NULL']:
             return "RFC faltante"
+        # El RFC de persona moral tiene 12 caracteres (3 letras iniciales) y el
+        # de persona física 13 (4 letras iniciales). Ambos llevan 6 dígitos de
+        # fecha y 3 de homoclave.
+        es_moral = self._es_moral_row(row)
+        longitud = 12 if es_moral else 13
+        n_letras = 3 if es_moral else 4
+        fin_fecha = n_letras + 6
         errors = []
-        if len(rfc) != 13:
-            errors.append(f"Longitud incorrecta: {len(rfc)} caracteres")
-        if len(rfc) >= 4 and not re.match(r'^[A-Z]{4}', rfc):
-            errors.append("Primeros 4 caracteres no son letras")
-        if len(rfc) >= 10 and not re.match(r'^[0-9]{6}', rfc[4:10]):
-            errors.append("Caracteres del 5 al 10 no son números")
-        if len(rfc) == 13 and not re.match(r'^[A-Z0-9]{3}$', rfc[10:]):
-            errors.append("Últimos 3 caracteres no son alfanuméricos")
+        if len(rfc) != longitud:
+            errors.append(f"Longitud incorrecta: {len(rfc)} caracteres (esperado {longitud})")
+        if len(rfc) >= n_letras and not re.match(r'^[A-Z]{%d}' % n_letras, rfc):
+            errors.append(f"Primeros {n_letras} caracteres no son letras")
+        if len(rfc) >= fin_fecha and not re.match(r'^[0-9]{6}$', rfc[n_letras:fin_fecha]):
+            errors.append("Los 6 caracteres de la fecha no son números")
+        if len(rfc) == longitud and not re.match(r'^[A-Z0-9]{3}$', rfc[fin_fecha:]):
+            errors.append("Últimos 3 caracteres (homoclave) no son alfanuméricos")
         return "; ".join(errors) if errors else None
 
     def _validar_direccion(self, row):
@@ -351,8 +373,8 @@ class Validator:
         if pd.isna(valor) or valor == '':
             return "Dirección vacía"
         direc = str(valor)
-        if direc.count(' ') + direc.count(',') < 5:
-            return "Dirección muy corta (menos de 5 separadores)"
+        if direc.count(' ') + direc.count(',') < DIRECCION_MIN_SEPARADORES:
+            return f"Dirección muy corta (menos de {DIRECCION_MIN_SEPARADORES} separadores)"
         return None
 
     def _validar_nivel_cuenta(self, row):
@@ -385,6 +407,9 @@ class Validator:
             df_temp = df_temp.dropna(subset=[col_curp])
             df_temp['nombre_norm'] = df_temp[col_nombre].astype(str).str.strip().str.lower()
             df_temp['curp'] = df_temp[col_curp].astype(str).str.strip().str.upper()
+            # Excluir CURP vacíos/no válidos: si no, las personas morales (sin CURP)
+            # se agruparían todas juntas y se marcarían como mismo CURP.
+            df_temp = df_temp[~df_temp['curp'].isin(['', 'NAN', 'NONE', 'NULL'])]
             grupos = df_temp.groupby('curp')['nombre_norm'].nunique()
             curps_con_multiples = grupos[grupos > 1].index
             if not curps_con_multiples.empty:
@@ -397,13 +422,20 @@ class Validator:
         return None
 
     # ------------------------------------------------------------------
-    # Método principal que integra todas las validaciones
+    # Método principal
     # ------------------------------------------------------------------
-    def validar_todo(self):
+    def validar_todo(self, incluir_duplicados: bool = True) -> tuple[dict, int]:
+        # incluir_duplicados=False omite la detección de duplicados (IDs y
+        # nombre/CURP), que es global: al validar por lotes (SQLite) se calcula
+        # sobre todo el conjunto, no lote por lote.
         self._estandarizar_fechas()
         errores_dataframes = {}
         errores_totales = 0
         current_date = pd.Timestamp(datetime.now())
+
+        # Tipo de persona por fila (True = moral). Se usa para omitir en personas
+        # morales las validaciones que solo aplican a persona física.
+        es_moral = self._serie_es_moral()
 
         # 1. Celdas vacías en columnas críticas
         registros_con_nulos = []
@@ -411,41 +443,55 @@ class Validator:
             col = self.col_mapping.get(campo)
             if col and col in self.df.columns:
                 nulos = self.df[self.df[col].isnull()].copy()
+                # El género no aplica a personas morales: no marcar su vacío.
+                if campo == 'genero' and not nulos.empty:
+                    nulos = nulos[~es_moral.loc[nulos.index]]
                 if not nulos.empty:
                     base = self._obtener_columnas_base()
                     cols = list(base.values()) + [col]
                     df_nulo = nulos[cols].copy()
-                    df_nulo['Tipo_Error'] = f"Celda vacía en {campo}"
+                    if campo == 'fecha_nacimiento':
+                        df_nulo['Tipo_Error'] = "Celda vacía en " + \
+                            self._etiqueta_fecha_nac(df_nulo.index, es_moral)
+                    else:
+                        df_nulo['Tipo_Error'] = f"Celda vacía en {campo}"
                     registros_con_nulos.append(df_nulo)
         if registros_con_nulos:
             df_nulos = pd.concat(registros_con_nulos)
             errores_dataframes['Celdas Vacias'] = df_nulos
             errores_totales += len(df_nulos)
 
-        # 2. IDs duplicados
-        df_ids_dup = self._validar_ids_unicos()
-        if df_ids_dup is not None:
-            errores_dataframes['IDs Duplicados'] = df_ids_dup
-            errores_totales += len(df_ids_dup)
+        # 2. IDs duplicados   y   3. Nombres duplicados con mismo CURP
+        # (validaciones globales; se omiten en el modo por lotes)
+        if incluir_duplicados:
+            df_ids_dup = self._validar_ids_unicos()
+            if df_ids_dup is not None:
+                errores_dataframes['IDs Duplicados'] = df_ids_dup
+                errores_totales += len(df_ids_dup)
 
-        # 3. Nombres duplicados con mismo CURP
-        df_nombres_dup = self._validar_nombres_duplicados_con_curp()
-        if df_nombres_dup is not None:
-            errores_dataframes['Nombres Duplicados (CURP)'] = df_nombres_dup
-            errores_totales += len(df_nombres_dup)
+            df_nombres_dup = self._validar_nombres_duplicados_con_curp()
+            if df_nombres_dup is not None:
+                errores_dataframes['Nombres Duplicados (CURP)'] = df_nombres_dup
+                errores_totales += len(df_nombres_dup)
 
         # 4. Fechas futuras
         registros_futuros = []
         for campo in self.columnas_fecha:
             col = self.col_mapping.get(campo)
-            if col and col in self.df.columns and self.df[col].dtype == 'datetime64[ns]':
+            # compat pandas>=3: antes era self.df[col].dtype == 'datetime64[ns]'
+            if col and col in self.df.columns and pd.api.types.is_datetime64_any_dtype(self.df[col]):
                 futuras = self.df[(self.df[col] > current_date) & self.df[col].notna()].copy()
                 if not futuras.empty:
                     base = self._obtener_columnas_base()
                     cols = list(base.values()) + [col]
                     df_fut = futuras[cols].copy()
-                    df_fut['Tipo_Error'] = f"Fecha futura en {campo}"
-                    df_fut['Columna_Error'] = campo
+                    if campo == 'fecha_nacimiento':
+                        etiqueta = self._etiqueta_fecha_nac(df_fut.index, es_moral)
+                        df_fut['Tipo_Error'] = "Fecha futura en " + etiqueta
+                        df_fut['Columna_Error'] = etiqueta
+                    else:
+                        df_fut['Tipo_Error'] = f"Fecha futura en {campo}"
+                        df_fut['Columna_Error'] = campo
                     df_fut['Fecha_Afectada'] = df_fut[col].dt.strftime('%d/%m/%Y')
                     registros_futuros.append(df_fut)
         if registros_futuros:
@@ -455,11 +501,14 @@ class Validator:
 
         # 5. Edades irrealistas y menores de 18 años
         col_nac = self.col_mapping.get('fecha_nacimiento')
-        if col_nac and col_nac in self.df.columns and self.df[col_nac].dtype == 'datetime64[ns]':
+        # compat pandas>=3: antes era self.df[col_nac].dtype == 'datetime64[ns]'
+        if col_nac and col_nac in self.df.columns and pd.api.types.is_datetime64_any_dtype(self.df[col_nac]):
             df_temp = self.df.copy()
             df_temp['Edad'] = (current_date - df_temp[col_nac]).dt.days / 365.25
-            # Irrealistas
-            irrealistas_idx = ((df_temp['Edad'] > 100) | (df_temp['Edad'] < 0)) & df_temp[col_nac].notna()
+            # Los controles de edad solo aplican a persona física (en moral la
+            # fecha es de constitución, sin límite de edad).
+            irrealistas_idx = (((df_temp['Edad'] > 100) | (df_temp['Edad'] < 0))
+                               & df_temp[col_nac].notna() & ~es_moral)
             if irrealistas_idx.any():
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_nac]
@@ -468,8 +517,7 @@ class Validator:
                 df_irr['Tipo_Error'] = 'Edad irrealista'
                 errores_dataframes['Edades Irrealistas'] = df_irr
                 errores_totales += len(df_irr)
-            # Menores
-            menores_idx = df_temp['Edad'] < 18
+            menores_idx = (df_temp['Edad'] < 18) & ~es_moral
             if menores_idx.any():
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_nac]
@@ -479,13 +527,13 @@ class Validator:
                 errores_dataframes['Menores de 18 Años'] = df_men
                 errores_totales += len(df_men)
 
-        # 6. Teléfonos (10 dígitos)
+        # 6. Teléfonos
         col_tel = self.col_mapping.get('Teléfono')
         if col_tel and col_tel in self.df.columns:
             df_temp = self.df.copy()
             df_temp['Telefono_cleaned'] = df_temp[col_tel].astype(str).str.replace(r'[^0-9]', '', regex=True)
             invalidos_idx = (
-                (df_temp['Telefono_cleaned'].str.len() != 10) &
+                (df_temp['Telefono_cleaned'].str.len() != TELEFONO_MIN_DIGITOS) &
                 (df_temp['Telefono_cleaned'] != '') &
                 (df_temp['Telefono_cleaned'] != 'nan')
             )
@@ -498,19 +546,17 @@ class Validator:
                 errores_dataframes['Telefonos Invalidos'] = df_inv
                 errores_totales += len(df_inv)
 
-        # 7. CURP
+        # 7. CURP (solo persona física: las morales no tienen CURP)
         col_curp = self.col_mapping.get('CURP')
         if col_curp and col_curp in self.df.columns:
             df_temp = self.df.copy()
             df_temp['CURP_Validation_Errors'] = df_temp.apply(self._validate_curp_row, axis=1)
-            curps_invalidos_idx = df_temp['CURP_Validation_Errors'].notna()
+            curps_invalidos_idx = df_temp['CURP_Validation_Errors'].notna() & ~es_moral
             if curps_invalidos_idx.any():
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_curp]
                 df_curp = self.df.loc[curps_invalidos_idx, cols].copy()
-                df_curp['CURP_Validation_Errors'] = df_temp.loc[curps_invalidos_idx, 'CURP_Validation_Errors']
-                df_curp['Tipo_Error'] = df_curp['CURP_Validation_Errors']
-                df_curp = df_curp.drop(columns=['CURP_Validation_Errors'])
+                df_curp['Tipo_Error'] = df_temp.loc[curps_invalidos_idx, 'CURP_Validation_Errors']
                 errores_dataframes['CURPs Invalidos'] = df_curp
                 errores_totales += len(df_curp)
 
@@ -524,33 +570,22 @@ class Validator:
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_rfc]
                 df_rfc = self.df.loc[rfcs_invalidos_idx, cols].copy()
-                df_rfc['RFC_Validation_Errors'] = df_temp.loc[rfcs_invalidos_idx, 'RFC_Validation_Errors']
-                df_rfc['Tipo_Error'] = df_rfc['RFC_Validation_Errors']
-                df_rfc = df_rfc.drop(columns=['RFC_Validation_Errors'])
+                df_rfc['Tipo_Error'] = df_temp.loc[rfcs_invalidos_idx, 'RFC_Validation_Errors']
                 errores_dataframes['RFCs Invalidos'] = df_rfc
                 errores_totales += len(df_rfc)
 
-        # 9. Consistencia lugar de nacimiento (entidad vs país)
+        # 9. Consistencia lugar de nacimiento
         col_entidad = self.col_mapping.get('entidad_federativa')
         col_pais = self.col_mapping.get('Pais_nacimiento')
         col_nacionalidad = self.col_mapping.get('Nacionalidad')
         if all(x is not None for x in [col_entidad, col_pais, col_nacionalidad]):
-            estados_mexicanos_raw = [
-                'Aguascalientes', 'Baja California', 'Baja California Sur', 'Campeche', 'Coahuila',
-                'Colima', 'Chiapas', 'Chihuahua', 'Ciudad de México', 'Durango', 'Guanajuato',
-                'Guerrero', 'Hidalgo', 'Jalisco', 'México', 'Michoacán', 'Morelos', 'Nayarit',
-                'Nuevo León', 'Oaxaca', 'Puebla', 'Querétaro', 'Quintana Roo', 'San Luis Potosí',
-                'Sinaloa', 'Sonora', 'Tabasco', 'Tamaulipas', 'Tlaxcala', 'Veracruz', 'Yucatán', 'Zacatecas', 'CDMX'
-            ]
-            estados_norm = [self._normalizar_columna(e).upper() for e in estados_mexicanos_raw]
-
             df_temp = self.df.copy()
             df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).apply(self._normalizar_entidad)
             df_temp['Pais_es_mexico'] = df_temp[col_pais].apply(self._es_mexicano)
             df_temp['Nacionalidad_es_mexico'] = df_temp[col_nacionalidad].apply(self._es_mexicano)
 
             inconsistentes = df_temp[
-                df_temp['Entidad_norm'].isin(estados_norm) &
+                df_temp['Entidad_norm'].isin(ESTADOS_MEXICANOS_NORM) &
                 (~df_temp['Pais_es_mexico'] | ~df_temp['Nacionalidad_es_mexico'])
             ].copy()
 
@@ -607,4 +642,5 @@ class Validator:
             errores_dataframes['Otros Errores'] = df_otros
             errores_totales += len(df_otros)
 
+        logger.info("Validación completada: %d errores encontrados", errores_totales)
         return errores_dataframes, errores_totales

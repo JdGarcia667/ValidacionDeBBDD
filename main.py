@@ -1,26 +1,11 @@
-import tkinter as tk
-from gui.main_window import MainWindow
-from gui.splash_screen import SplashScreen
-import ttkbootstrap as ttk
+"""Punto de entrada de la aplicacion (Flet)."""
+import flet as ft
 
-def main():
-    # Crear ventana raíz de ttkbootstrap (tema moderno)
-    root = ttk.Window(themename="superhero")  # Puedes cambiar el tema
-    root.title("Validador de Clientes")
-    root.geometry("600x400")
-    
-    # Mostrar splash screen
-    splash = SplashScreen(root)
-    splash.show()
-    
-    # Inicializar aplicación principal
-    app = MainWindow(root)
-    
-    # Cerrar splash después de un breve retraso (simula carga)
-    root.after(2000, splash.close)  # 2 segundos de splash
-    
-    # Iniciar el bucle de eventos
-    root.mainloop()
+from ui.app import main
 
 if __name__ == "__main__":
-    main()
+    # Flet >=0.80 usa ft.run; versiones previas, ft.app
+    try:
+        ft.run(main)
+    except AttributeError:
+        ft.app(target=main)

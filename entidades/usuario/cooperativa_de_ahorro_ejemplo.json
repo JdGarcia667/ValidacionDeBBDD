@@ -1,0 +1,69 @@
+{
+  "nombre": "Cooperativa de Ahorro (ejemplo)",
+  "descripcion": "Entidad configurable de ejemplo: valida socios por campo (sin lógica de banca).",
+  "campos_cliente": [
+    {
+      "logico": "socio_id",
+      "etiqueta": "",
+      "reglas": [
+        {
+          "id": "no_vacio",
+          "parametros": {}
+        },
+        {
+          "id": "unico",
+          "parametros": {}
+        }
+      ]
+    },
+    {
+      "logico": "nombre",
+      "etiqueta": "",
+      "reglas": [
+        {
+          "id": "no_vacio",
+          "parametros": {}
+        },
+        {
+          "id": "al_menos_un_espacio",
+          "parametros": {}
+        }
+      ]
+    },
+    {
+      "logico": "rfc",
+      "etiqueta": "",
+      "reglas": [
+        {
+          "id": "rfc",
+          "parametros": {}
+        }
+      ]
+    },
+    {
+      "logico": "correo",
+      "etiqueta": "",
+      "reglas": [
+        {
+          "id": "contiene",
+          "parametros": {
+            "subcadena": "@"
+          }
+        }
+      ]
+    },
+    {
+      "logico": "telefono",
+      "etiqueta": "",
+      "reglas": [
+        {
+          "id": "min_digitos",
+          "parametros": {
+            "minimo": 10
+          }
+        }
+      ]
+    }
+  ],
+  "campos_operacion": []
+}

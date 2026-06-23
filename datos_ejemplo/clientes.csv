@@ -1,0 +1,4 @@
+id_cliente,nombre,fecha_nacimiento,genero,tipo de persona,estatus_cliente,fecha_inicio_relacion,fecha_termino_relacion,grado_riesgo,fecha_riesgo,PEP,Nacionalidad,Pais_nacimiento,entidad_federativa,Actividad_generica,Actividad_especifica,Teléfono,Correo electronico,CURP,RFC,Dirección,Nivel_cuenta
+1001,Ana Lopez Ruiz,12/05/1990,MUJER,Fisica,Activo,01/01/2020,,Bajo,01/01/2021,No,Mexicana,Mexico,Ciudad de Mexico,Comercio,Abarrotes,5512345678,ana@mail.com,LOAA900512MDFXXX09,LOAA900512AB1,"Av Reforma 100, Centro, CDMX, 06000, MX",2
+1002,Juan,01/01/2015,HOMBRE,,Activo,01/01/2020,01/01/2019,,,,,Mexico,Narnia,,,555,correo-malo,CURPCORTA,XX,x,
+1001,Maria Perez,20/03/1985,MUJER,Fisica,Inactivo,15/06/2018,10/06/2017,Medio,01/01/2020,Si,Mexicana,Mexico,Jalisco,Servicios,Consultoria,3398765432,maria@mail.com,PEMA850320MJCXXX01,PEMA850320CD2,"Calle Hidalgo 45, Centro, Guadalajara, Jalisco, 44100",3

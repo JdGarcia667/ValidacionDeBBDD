@@ -1,0 +1,136 @@
+"""Validación de requisitos por NIVEL DE CUENTA (clientes).
+
+Cada entidad define, por nivel (1-4), qué campos deben venir llenos, pudiendo
+diferenciar por tipo de persona (física/moral) y por modalidad de apertura
+(presencial/remota). Esta lógica es por fila, así que sirve igual para la
+validación en memoria y por lotes (SQLite).
+"""
+from __future__ import annotations
+
+import re
+
+import pandas as pd
+
+NIVELES = ["1", "2", "3", "4"]
+
+
+def _vacio(v) -> bool:
+    if v is None:
+        return True
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip().lower() in ("", "nan", "none", "null")
+
+
+def _fila(idx):
+    try:
+        return int(idx) + 2
+    except (TypeError, ValueError):
+        return idx
+
+
+def normalizar_nivel(valor) -> str | None:
+    """Extrae '1'..'4' de un valor de nivel (admite 'Nivel 2', '2', 2.0...)."""
+    if _vacio(valor):
+        return None
+    m = re.search(r"[1-4]", str(valor))
+    return m.group(0) if m else None
+
+
+def normalizar_modalidad(valor, default: str = "presencial") -> str:
+    if _vacio(valor):
+        return default
+    t = str(valor).strip().lower()
+    if "remot" in t or t in ("r", "online", "digital", "no presencial"):
+        return "remota"
+    if "presen" in t or t in ("p", "fisica", "sucursal"):
+        return "presencial"
+    return default
+
+
+def tipo_de(valor, default: str = "fisica") -> str:
+    if _vacio(valor):
+        return default
+    return "moral" if "moral" in str(valor).strip().lower() else "fisica"
+
+
+def campos_requeridos(requisitos, nivel: str, tipo: str, modalidad: str) -> list[str]:
+    """Unión de campos requeridos por las reglas que aplican a la combinación."""
+    out: list[str] = []
+    for r in requisitos:
+        if str(r.nivel) != nivel:
+            continue
+        if r.tipo_persona not in (tipo, "ambos"):
+            continue
+        if r.modalidad not in (modalidad, "ambas"):
+            continue
+        for c in r.campos:
+            if c not in out:
+                out.append(c)
+    return out
+
+
+def _tipos_por_nivel(requisitos) -> dict[str, set]:
+    """Para cada nivel definido, qué tipos de persona admite."""
+    res: dict[str, set] = {}
+    for r in requisitos:
+        s = res.setdefault(str(r.nivel), set())
+        if r.tipo_persona == "ambos":
+            s.update(("fisica", "moral"))
+        else:
+            s.add(r.tipo_persona)
+    return res
+
+
+def validar_requisitos(df, mapeo, requisitos, *, campo_nivel, campo_tipo_persona="",
+                       campo_modalidad="", default_modalidad="presencial",
+                       default_tipo="fisica", id_logico="id_cliente") -> list[dict]:
+    """Devuelve una lista de hallazgos (dicts) por campos faltantes según el nivel.
+
+    Cada hallazgo: {fila, id_cliente, nivel, tipo, modalidad, campo, columna, Tipo_Error}.
+    """
+    if not requisitos or not campo_nivel:
+        return []
+    col_nivel = mapeo.get(campo_nivel)
+    if not col_nivel or col_nivel not in df.columns:
+        return []  # sin columna de nivel no se puede aplicar
+    col_tipo = mapeo.get(campo_tipo_persona) if campo_tipo_persona else None
+    col_mod = mapeo.get(campo_modalidad) if campo_modalidad else None
+    col_id = mapeo.get(id_logico)
+
+    niveles_def = {str(r.nivel) for r in requisitos}
+    tipos_por_nivel = _tipos_por_nivel(requisitos)
+
+    out: list[dict] = []
+    for idx, row in df.iterrows():
+        nivel = normalizar_nivel(row[col_nivel])
+        if nivel is None or nivel not in niveles_def:
+            continue  # nivel vacío o no configurado: lo cubre otra validación
+        tipo = tipo_de(row[col_tipo], default_tipo) if (col_tipo and col_tipo in df.columns) else default_tipo
+        modalidad = (normalizar_modalidad(row[col_mod], default_modalidad)
+                     if (col_mod and col_mod in df.columns) else default_modalidad)
+        idv = row[col_id] if (col_id and col_id in df.columns) else idx
+        fila = _fila(idx)
+
+        if tipo not in tipos_por_nivel.get(nivel, set()):
+            out.append(_h(fila, idv, nivel, tipo, modalidad, "Nivel_cuenta", col_nivel,
+                          f"Nivel {nivel} no aplica a persona {tipo}"))
+            continue
+
+        for campo in campos_requeridos(requisitos, nivel, tipo, modalidad):
+            col = mapeo.get(campo)
+            valor = row[col] if (col and col in df.columns) else None
+            if _vacio(valor):
+                out.append(_h(fila, idv, nivel, tipo, modalidad, campo, col or "(sin mapear)",
+                              f"Falta '{campo}' (requerido en nivel {nivel}, "
+                              f"{tipo}, {modalidad})"))
+    return out
+
+
+def _h(fila, idv, nivel, tipo, modalidad, campo, columna, tipo_error) -> dict:
+    return {"fila": fila, "id_cliente": idv, "nivel": nivel, "tipo": tipo,
+            "modalidad": modalidad, "campo": campo, "columna": columna,
+            "Tipo_Error": tipo_error}

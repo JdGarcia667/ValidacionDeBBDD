@@ -1,1 +1,9 @@
-sv_ttk\nttkbootstrap\npandas\nopenpyxl\nlxml
+flet>=0.80
+pandas>=2.0
+numpy>=1.24
+openpyxl>=3.1
+xlsxwriter>=3.1
+# Opcional: solo si usas core/mapper.py (auto-mapeo fuzzy del codigo original).
+# La UI no lo necesita (usa entidades/mapeo.py, sin dependencias).
+# fuzzywuzzy
+# python-Levenshtein

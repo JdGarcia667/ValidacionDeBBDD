@@ -1,0 +1,5 @@
+id_operacion,id_cuenta,id_cliente,monto,tipo_operacion,instrumento_monetario,fecha_operacion,nivel_cuenta
+OP1,CTA1,1001,60000,IN,EFECTIVO,10/01/2026,2
+OP2,CTA1,1001,55000,IN,EFECTIVO,15/01/2026,2
+OP3,CTA2,1003,3000,OUT,TRANSFER,20/01/2026,1
+OP4,CTA3,1004,250000,IN,EFECTIVO,05/02/2026,3

@@ -24,6 +24,20 @@ class ValidatorOperaciones:
         return pd.to_numeric(limpia, errors='coerce')
 
     def validar_todo(self):
+        """Agrupa las operaciones y aplica los filtros de monto."""
+        grouped, _ = self.agrupar()
+        if grouped is None or grouped.empty:
+            return {}, 0
+        return self.aplicar_filtros(grouped)
+
+    def agrupar(self):
+        """Prepara y agrupa las operaciones, ANTES de aplicar filtros.
+
+        Devuelve (grouped_df, group_cols). Separar esta fase permite validar por
+        lotes (SQLite): se agrupa cada lote y luego se vuelven a sumar los grupos
+        globalmente, obteniendo totales correctos aunque un mismo grupo quede
+        partido entre lotes. Devuelve (None, []) si no quedan datos válidos.
+        """
         if self.update_callback:
             self.update_callback("Validando columnas...")
 
@@ -59,7 +73,7 @@ class ValidatorOperaciones:
         self.df = self.df.dropna(subset=['monto_limpio'])
 
         if self.df.empty:
-            return {}, 0
+            return None, []
 
         # 4. Conversión de moneda
         moneda = self.config.get('moneda', 'MONEDA NACIONAL')
@@ -83,12 +97,12 @@ class ValidatorOperaciones:
                 if self.df.empty:
                     if self.update_callback:
                         self.update_callback("No se pudo realizar la conversión (datos insuficientes)")
-                    return {}, 0
+                    return None, []
 
             except Exception as e:
                 if self.update_callback:
                     self.update_callback(f"Error en conversión: {str(e)[:100]}")
-                return {}, 0
+                return None, []
 
         else:
             self.df['monto_convertido'] = self.df['monto_limpio']
@@ -115,6 +129,14 @@ class ValidatorOperaciones:
             clientes_por_cuenta = self.df.groupby(col_id_cuenta)[col_id_cliente].first().to_dict()
             grouped['id_cliente'] = grouped[col_id_cuenta].map(clientes_por_cuenta)
 
+        return grouped, group_cols
+
+    def aplicar_filtros(self, grouped):
+        """Aplica los filtros de monto sobre el DataFrame ya agrupado.
+
+        Recibe el resultado de agrupar() (o la re-agregación de varios lotes) y
+        devuelve (errores_dataframes, total_errores).
+        """
         # 6. Aplicar filtros de monto
         filtros = self.config.get('filtros', [])
         if not filtros:
