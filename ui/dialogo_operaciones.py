@@ -10,9 +10,13 @@ import pandas as pd
 
 
 class ConfigOperacionesDialog:
-    def __init__(self, page: ft.Page, al_confirmar):
+    def __init__(self, page: ft.Page, al_confirmar, requiere_tasas: bool = False):
         self.page = page
         self.al_confirmar = al_confirmar
+        # Si la entidad valida límites por nivel, se necesitan SIEMPRE ambos
+        # archivos de tasas (UDIS y tipo de cambio), independientemente de la
+        # moneda de análisis elegida.
+        self.requiere_tasas = requiere_tasas
         self.filtros: list[tuple[str, float]] = []
         self.archivo_udis = None
         self.archivo_tc = None
@@ -57,11 +61,20 @@ class ConfigOperacionesDialog:
             ft.ElevatedButton("Archivo tipo de cambio", icon=ft.Icons.UPLOAD_FILE,
                               on_click=lambda e: self.page.run_task(self._cargar_tasa, "tc")),
             self.tc_status], visible=False)
+        if self.requiere_tasas:                      # límites por nivel: ambos siempre
+            self.fila_udis.visible = True
+            self.fila_tc.visible = True
+
+        nota_tasas = ft.Text(
+            "Esta entidad valida límites por nivel: carga el archivo de UDIS (para "
+            "abonos) y el de tipo de cambio (para efectivo en USD).",
+            size=11, italic=True, color=ft.Colors.BLUE_700,
+            visible=self.requiere_tasas)
 
         contenido = ft.Container(width=560, content=ft.Column([
             ft.Text("Moneda de analisis", weight=ft.FontWeight.BOLD),
             self.moneda,
-            self.fila_udis, self.fila_tc,
+            nota_tasas, self.fila_udis, self.fila_tc,
             ft.Divider(),
             ft.Text("Agrupacion", weight=ft.FontWeight.BOLD),
             self.agrupacion,
@@ -87,8 +100,9 @@ class ConfigOperacionesDialog:
     # ------------------------------------------------------------------ #
     def _toggle_tasas(self):
         m = self.moneda.value
-        self.fila_udis.visible = m == "UDIS"
-        self.fila_tc.visible = m == "DOLARES"
+        # Con límites por nivel ambos archivos quedan visibles siempre.
+        self.fila_udis.visible = self.requiere_tasas or m == "UDIS"
+        self.fila_tc.visible = self.requiere_tasas or m == "DOLARES"
         self.page.update()
 
     def _agregar_filtro(self):
@@ -152,6 +166,10 @@ class ConfigOperacionesDialog:
             return
         if m == "DOLARES" and not self.archivo_tc:
             self._toast("Para DOLARES carga el archivo de tipo de cambio.")
+            return
+        if self.requiere_tasas and not (self.archivo_udis and self.archivo_tc):
+            self._toast("Esta entidad valida límites por nivel: carga ambos archivos "
+                        "(UDIS y tipo de cambio).")
             return
         config = {
             "moneda": m,

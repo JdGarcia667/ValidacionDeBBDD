@@ -14,8 +14,9 @@ import pandas as pd
 from core.validator import Validator
 from core.validator_operaciones import ValidatorOperaciones
 from core.niveles import validar_requisitos
+from core.limites_operaciones import LimitesOperaciones
 from .base import ValidadorEntidad
-from .modelo import RequisitoNivel
+from .modelo import RequisitoNivel, LimiteOperacion
 
 
 # Campos requeridos para clientes (identicos a core/mapper.py: Mapper.CAMPOS_REQUERIDOS)
@@ -60,7 +61,30 @@ REQUISITOS_BANCO = [
 # Campos requeridos para operaciones (identicos a core/mapper_operaciones.py)
 CAMPOS_OPERACION = [
     "id_operacion", "id_cuenta", "id_cliente", "monto", "tipo_operacion",
-    "instrumento_monetario", "fecha_operacion", "nivel_cuenta",
+    "instrumento_monetario", "fecha_operacion", "nivel_cuenta", "tipo de persona",
+]
+
+# --- Límites de operación por nivel (montos) --- #
+# Roles de campo de operación -> nombre lógico (para el motor de límites).
+CAMPOS_LIMITES = {
+    "fecha": "fecha_operacion", "monto": "monto", "cuenta": "id_cuenta",
+    "cliente": "id_cliente", "nivel": "nivel_cuenta", "tipo_persona": "tipo de persona",
+    "tipo_operacion": "tipo_operacion", "instrumento": "instrumento_monetario",
+}
+# Qué valores de tipo_operacion son ABONO y de instrumento son EFECTIVO.
+VALORES_ABONO = ["IN", "ABONO", "DEPOSITO", "DEP", "ENTRADA", "CREDITO"]
+VALORES_EFECTIVO = ["EFECTIVO", "CASH"]
+
+_L = LimiteOperacion
+LIMITES_BANCO = [
+    # Abonos mensuales en UDIS. Nivel 1-2 solo física; 3 ambos; 4 sin límite.
+    _L("abono_mensual", "1", "fisica", 750),
+    _L("abono_mensual", "2", "fisica", 3000),
+    _L("abono_mensual", "3", "ambos", 10000),
+    _L("abono_mensual", "4", "ambos", None),
+    # Efectivo en USD por tipo de persona (mensual por cliente).
+    _L("efectivo_usd", "todos", "fisica", 4000),
+    _L("efectivo_usd", "todos", "moral", 0),
 ]
 
 
@@ -78,6 +102,9 @@ class BancoValidador(ValidadorEntidad):
     def campos_operacion(self) -> list[str]:
         return list(CAMPOS_OPERACION)
 
+    def tiene_limites_operacion(self) -> bool:
+        return bool(LIMITES_BANCO)
+
     def validar_clientes(self, df: pd.DataFrame, mapeo: dict,
                          tipo_persona_default: str | None = None) -> dict:
         errores, _ = Validator(df, mapeo, tipo_persona_default).validar_todo()
@@ -92,8 +119,18 @@ class BancoValidador(ValidadorEntidad):
 
     def validar_operaciones(self, df: pd.DataFrame, mapeo: dict,
                             config: dict | None = None) -> dict:
-        errores, _ = ValidatorOperaciones(df, mapeo, config or {}).validar_todo()
+        config = config or {}
+        errores, _ = ValidatorOperaciones(df, mapeo, config).validar_todo()
+        errores.update(self._limites(df, mapeo, config).validar())
         return errores
+
+    def _limites(self, df, mapeo, config) -> LimitesOperaciones:
+        """Construye el validador de límites con los archivos de tasas del config."""
+        return LimitesOperaciones(
+            df, mapeo, LIMITES_BANCO, campos=CAMPOS_LIMITES,
+            valores_abono=VALORES_ABONO, valores_efectivo=VALORES_EFECTIVO,
+            archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
+            archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
 
     # --- Validación por lotes desde SQLite (grandes volúmenes) --- #
     def validar_clientes_sqlite(self, db_path: str, mapeo: dict,
@@ -110,8 +147,15 @@ class BancoValidador(ValidadorEntidad):
     def validar_operaciones_sqlite(self, db_path: str, mapeo: dict,
                                    config: dict | None = None, progreso=None) -> dict:
         from core.sqlite_validator_operaciones import SQLiteValidatorOperaciones
-        errores, _ = SQLiteValidatorOperaciones(db_path, mapeo, config or {},
-                                                progreso=progreso).validar_todo()
+        config = config or {}
+        limites_kwargs = dict(
+            limites=LIMITES_BANCO, campos=CAMPOS_LIMITES,
+            valores_abono=VALORES_ABONO, valores_efectivo=VALORES_EFECTIVO,
+            archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
+            archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
+        errores, _ = SQLiteValidatorOperaciones(
+            db_path, mapeo, config, progreso=progreso,
+            limites_kwargs=limites_kwargs).validar_todo()
         return errores
 
 

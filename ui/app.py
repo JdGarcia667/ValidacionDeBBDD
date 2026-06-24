@@ -347,7 +347,9 @@ class App:
     def _tras_tipo_persona(self, default):
         self._tp_default = default
         if self._tiene_ops() and self.entidad.requiere_config_operaciones:
-            ConfigOperacionesDialog(self.page, self._tras_config).abrir()
+            ConfigOperacionesDialog(
+                self.page, self._tras_config,
+                requiere_tasas=self.entidad.tiene_limites_operacion()).abrir()
         else:
             self._tras_config(None)
 
@@ -530,15 +532,30 @@ class App:
         self.campos_cli: list[CampoConfig] = []
         self.campos_ops: list[CampoConfig] = []
         self.requisitos_cli: list[RequisitoNivel] = []
+        self.limites_op: list[LimiteOperacion] = []
         self.lista_cli = ft.Column(spacing=2)
         self.lista_ops = ft.Column(spacing=2)
         self.lista_niveles = ft.Column(spacing=2)
+        self.lista_limites = ft.Column(spacing=2)
 
         # Designación de qué campo lógico (de clientes) lleva el nivel/tipo/modalidad.
         self.dd_campo_nivel = ft.Dropdown(label="Campo de NIVEL (1-4)", width=200, dense=True)
         self.dd_campo_tipo = ft.Dropdown(label="Campo TIPO persona (opc.)", width=200, dense=True)
         self.dd_campo_modalidad = ft.Dropdown(label="Campo MODALIDAD (opc.)", width=200, dense=True)
         self._refrescar_opciones_nivel()
+
+        # Designación de campos de OPERACIÓN para límites de monto.
+        self.op_roles = [("fecha", "Fecha"), ("monto", "Monto"), ("cuenta", "Cuenta"),
+                         ("cliente", "Cliente"), ("nivel", "Nivel"),
+                         ("tipo_persona", "Tipo persona"), ("tipo_operacion", "Tipo operación"),
+                         ("instrumento", "Instrumento")]
+        self.op_dd = {rol: ft.Dropdown(label=etq, width=150, dense=True)
+                      for rol, etq in self.op_roles}
+        self.tf_abono = ft.TextField(label="Valores de ABONO (coma)", width=300, dense=True,
+                                     value="IN, ABONO, DEPOSITO")
+        self.tf_efectivo = ft.TextField(label="Valores de EFECTIVO (coma)", width=300, dense=True,
+                                        value="EFECTIVO")
+        self._refrescar_opciones_op()
 
         cuerpo = ft.Container(width=640, content=ft.Column([
             self.nuevo_nombre, self.nuevo_desc, ft.Divider(),
@@ -559,6 +576,17 @@ class App:
             self.lista_niveles,
             ft.TextButton("Agregar requisito de nivel", icon=ft.Icons.ADD,
                           on_click=lambda e: self._editar_requisito_nivel()),
+            ft.Divider(),
+            ft.Text("Límites de OPERACIÓN por nivel (montos)", weight=ft.FontWeight.BOLD),
+            ft.Text("Designa los campos de operación y los valores de abono/efectivo; "
+                    "luego agrega los topes por nivel. Abonos se evalúan en UDIS y el "
+                    "efectivo en USD (requiere cargar ambos archivos de tasas al validar).",
+                    size=11, color=ft.Colors.GREY_700),
+            ft.Row(list(self.op_dd.values()), wrap=True),
+            ft.Row([self.tf_abono, self.tf_efectivo], wrap=True),
+            self.lista_limites,
+            ft.TextButton("Agregar límite de operación", icon=ft.Icons.ADD,
+                          on_click=lambda e: self._editar_limite_op()),
         ], scroll=ft.ScrollMode.AUTO, height=460))
 
         self.dlg_constructor = ft.AlertDialog(
@@ -603,6 +631,8 @@ class App:
             lista.controls.append(ft.Text(f"• {campo.logico} ({len(reglas)} reglas)"))
             if cual == "cli":
                 self._refrescar_opciones_nivel()   # nuevos campos disponibles para niveles
+            else:
+                self._refrescar_opciones_op()      # nuevos campos de operación
             self._cerrar(dlg)
             self.page.update()
 
@@ -661,6 +691,56 @@ class App:
                      ft.FilledButton("Agregar", on_click=aceptar)])
         self._abrir(dlg)
 
+    def _refrescar_opciones_op(self):
+        """Actualiza las opciones de los dropdowns de campos de operación."""
+        nombres = [c.logico for c in self.campos_ops]
+        opciones = [ft.dropdown.Option(NO_MAPEAR)] + [ft.dropdown.Option(n) for n in nombres]
+        for dd in self.op_dd.values():
+            dd.options = list(opciones)
+            if dd.value not in ([NO_MAPEAR] + nombres):
+                dd.value = NO_MAPEAR
+
+    def _editar_limite_op(self):
+        dd_concepto = ft.Dropdown(label="Concepto", width=200, value="abono_mensual",
+                                  options=[ft.dropdown.Option("abono_mensual"),
+                                           ft.dropdown.Option("efectivo_usd")])
+        dd_nivel = ft.Dropdown(label="Nivel", width=120, value="todos",
+                               options=[ft.dropdown.Option(n) for n in ["todos", "1", "2", "3", "4"]])
+        dd_tipo = ft.Dropdown(label="Tipo persona", width=150, value="ambos",
+                              options=[ft.dropdown.Option(t) for t in ["ambos", "fisica", "moral"]])
+        tf_limite = ft.TextField(label="Límite (vacío = sin límite)", width=200)
+
+        def aceptar(e):
+            txt = (tf_limite.value or "").strip().replace(",", "")
+            limite = None
+            if txt != "":
+                try:
+                    limite = float(txt)
+                except ValueError:
+                    self._toast("El límite debe ser numérico (o vacío para 'sin límite').")
+                    return
+            lim = LimiteOperacion(concepto=dd_concepto.value, nivel=dd_nivel.value,
+                                  tipo_persona=dd_tipo.value, limite=limite)
+            self.limites_op.append(lim)
+            unidad = "UDIS" if lim.concepto == "abono_mensual" else "USD"
+            txt_lim = "sin límite" if limite is None else f"{limite:g} {unidad}"
+            self.lista_limites.controls.append(
+                ft.Text(f"• {lim.concepto} / nivel {lim.nivel} / {lim.tipo_persona}: {txt_lim}",
+                        size=12))
+            self._cerrar(dlg)
+            self.page.update()
+
+        dlg = ft.AlertDialog(
+            modal=True, title=ft.Text("Límite de operación"),
+            content=ft.Container(width=520, content=ft.Column(
+                [ft.Row([dd_concepto, dd_nivel, dd_tipo], wrap=True), tf_limite,
+                 ft.Text("abono_mensual: tope de abonos del mes en UDIS.\n"
+                         "efectivo_usd: tope de efectivo del mes en USD (0 = prohibido).",
+                         size=11, color=ft.Colors.GREY_700)], tight=True)),
+            actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(dlg)),
+                     ft.FilledButton("Agregar", on_click=aceptar)])
+        self._abrir(dlg)
+
     def _convertir(self, valor, p):
         valor = (valor or "").strip()
         if p.tipo == "int":
@@ -695,12 +775,22 @@ class App:
             self._toast("Definiste requisitos por nivel: indica el campo de NIVEL.")
             return
 
+        op_campos = {rol: _designado(dd) for rol, dd in self.op_dd.items() if _designado(dd)}
+        if self.limites_op and not (op_campos.get("fecha") and op_campos.get("monto")):
+            self._toast("Definiste límites de operación: designa al menos los campos "
+                        "de FECHA y MONTO.")
+            return
+        _csv = lambda s: [x.strip() for x in (s or "").split(",") if x.strip()]
+
         cfg = EntidadConfig(nombre=nombre, descripcion=(self.nuevo_desc.value or "").strip(),
                             campos_cliente=self.campos_cli, campos_operacion=self.campos_ops,
                             requisitos_cliente=self.requisitos_cli,
                             campo_nivel=campo_nivel,
                             campo_tipo_persona=_designado(self.dd_campo_tipo),
-                            campo_modalidad=_designado(self.dd_campo_modalidad))
+                            campo_modalidad=_designado(self.dd_campo_modalidad),
+                            limites_operacion=self.limites_op, op_campos=op_campos,
+                            op_valores_abono=_csv(self.tf_abono.value),
+                            op_valores_efectivo=_csv(self.tf_efectivo.value))
         try:
             guardar_entidad(cfg)
         except ValueError as ex:

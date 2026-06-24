@@ -43,6 +43,11 @@ class ValidadorEntidad(ABC):
                             config: dict | None = None) -> dict:
         ...
 
+    def tiene_limites_operacion(self) -> bool:
+        """True si la entidad valida límites de monto por nivel (requiere cargar
+        los archivos de tasas UDIS y tipo de cambio)."""
+        return False
+
     # ------------------------------------------------------------------ #
     # Validación desde SQLite (grandes volúmenes divididos en varios archivos).
     # Implementación por defecto: lee toda la tabla y delega en el método normal.

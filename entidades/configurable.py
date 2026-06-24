@@ -46,6 +46,9 @@ class EntidadConfigurable(ValidadorEntidad):
     def campos_operacion(self) -> list[str]:
         return [c.logico for c in self.config.campos_operacion]
 
+    def tiene_limites_operacion(self) -> bool:
+        return bool(self.config.limites_operacion)
+
     # ------------------------------------------------------------------ #
     # Validación en memoria
     # ------------------------------------------------------------------ #
@@ -53,7 +56,9 @@ class EntidadConfigurable(ValidadorEntidad):
         return self._validar(df, mapeo, self.config.campos_cliente, "id_cliente")
 
     def validar_operaciones(self, df, mapeo, config=None) -> dict:
-        return self._validar(df, mapeo, self.config.campos_operacion, "id_operacion")
+        res = self._validar(df, mapeo, self.config.campos_operacion, "id_operacion")
+        res.update(self._limites_memoria(df, mapeo, config or {}))
+        return res
 
     # ------------------------------------------------------------------ #
     # Validación por lotes desde SQLite (mismo resultado, sin cargar todo)
@@ -65,8 +70,48 @@ class EntidadConfigurable(ValidadorEntidad):
 
     def validar_operaciones_sqlite(self, db_path, mapeo, config=None,
                                    progreso=None) -> dict:
-        return self._validar_sqlite(db_path, mapeo, self.config.campos_operacion,
-                                    "id_operacion", progreso)
+        res = self._validar_sqlite(db_path, mapeo, self.config.campos_operacion,
+                                   "id_operacion", progreso)
+        res.update(self._limites_sqlite(db_path, mapeo, config or {}, progreso))
+        return res
+
+    # ------------------------------------------------------------------ #
+    # Límites de operación por nivel (montos)
+    # ------------------------------------------------------------------ #
+    def _limites_validador(self, df, mapeo, config):
+        """Construye el validador de límites si la entidad los define; si no, None."""
+        if not self.config.limites_operacion or not self.config.op_campos:
+            return None
+        from core.limites_operaciones import LimitesOperaciones
+        return LimitesOperaciones(
+            df, mapeo, self.config.limites_operacion, campos=self.config.op_campos,
+            valores_abono=self.config.op_valores_abono,
+            valores_efectivo=self.config.op_valores_efectivo,
+            archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
+            archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
+
+    def _limites_memoria(self, df, mapeo, config) -> dict:
+        lim = self._limites_validador(df, mapeo, config)
+        return lim.validar() if lim is not None else {}
+
+    def _limites_sqlite(self, db_path, mapeo, config, progreso) -> dict:
+        lim = self._limites_validador(None, mapeo, config)
+        if lim is None:
+            return {}
+        from core.multi_loader import iter_chunks
+        from core.limites_operaciones import reagregar
+        parc_ab, parc_ef = [], []
+        for offset, chunk in iter_chunks(db_path):
+            if progreso:
+                progreso(f"Límites de operación (desde fila {offset:,})...")
+            lim.df = chunk
+            ga, ge = lim.agrupar()
+            if ga is not None and not ga.empty:
+                parc_ab.append(ga)
+            if ge is not None and not ge.empty:
+                parc_ef.append(ge)
+        g_ab, g_ef = reagregar(parc_ab, parc_ef)
+        return lim.aplicar_limites(g_ab, g_ef)
 
     # ------------------------------------------------------------------ #
     def _validar(self, df, mapeo, campos: list[CampoConfig], id_logico) -> dict:

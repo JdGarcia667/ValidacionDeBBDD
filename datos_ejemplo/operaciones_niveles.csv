@@ -1,0 +1,8 @@
+id_operacion,id_cuenta,id_cliente,monto,tipo_operacion,instrumento_monetario,fecha_operacion,nivel_cuenta,tipo de persona
+OP1,CTA1,CL1,4000,IN,TRANSFER,05/01/2025,1,fisica
+OP2,CTA1,CL1,4000,IN,TRANSFER,20/01/2025,1,fisica
+OP3,CTA2,CL2,70000,IN,TRANSFER,10/01/2025,3,fisica
+OP4,CTA3,CL3,1000,IN,EFECTIVO,12/01/2025,3,moral
+OP5,CTA4,CL4,45000,IN,EFECTIVO,08/01/2025,4,fisica
+OP6,CTA4,CL4,45000,IN,EFECTIVO,22/01/2025,4,fisica
+OP7,CTA5,CL5,2000,OUT,TRANSFER,15/01/2025,2,fisica
