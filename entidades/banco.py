@@ -21,12 +21,17 @@ from .modelo import RequisitoNivel, LimiteOperacion
 
 # Campos requeridos para clientes (identicos a core/mapper.py: Mapper.CAMPOS_REQUERIDOS)
 CAMPOS_CLIENTE = [
-    "id_cliente", "nombre", "fecha_nacimiento", "genero", "tipo de persona",
+    "id_cliente", "nombre", "apellido_paterno", "apellido_materno",
+    "fecha_nacimiento", "genero", "tipo de persona",
     "estatus_cliente", "fecha_inicio_relacion", "fecha_termino_relacion",
     "grado_riesgo", "fecha_riesgo", "PEP", "Nacionalidad", "Pais_nacimiento",
     "entidad_federativa", "Actividad_generica", "Actividad_especifica",
-    "Teléfono", "Correo electronico", "CURP", "RFC", "Dirección", "Nivel_cuenta",
-    "modalidad de apertura",
+    "Teléfono", "Correo electronico", "CURP", "RFC", "Dirección",
+    # Domicilio dividido en columnas (opcional; alternativa a 'Dirección').
+    "calle_avenida_via", "numero_exterior", "numero_interior",
+    "colonia_urbanizacion", "alcaldia_municipio", "ciudad_poblacion",
+    "entidad_federativa_estado", "codigo_postal", "pais",
+    "Nivel_cuenta", "modalidad de apertura",
 ]
 
 # Requisitos por nivel de cuenta (clientes). Mapeo del marco regulatorio a las

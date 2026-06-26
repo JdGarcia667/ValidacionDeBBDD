@@ -10,8 +10,21 @@ from core.utils import (
     DIRECCION_MIN_SEPARADORES,
     YEAR_CORTE_SIGLO,
 )
+from core.paises import es_mexico, es_pais_valido
 
 logger = logging.getLogger(__name__)
+
+# Partes del domicilio cuando viene dividido en columnas. 'numero_interior' es
+# opcional; el resto son obligatorias si el domicilio se valida por columnas.
+DIRECCION_PARTES_REQUERIDAS = [
+    "calle_avenida_via", "numero_exterior", "colonia_urbanizacion",
+    "alcaldia_municipio", "ciudad_poblacion", "entidad_federativa_estado",
+    "codigo_postal", "pais",
+]
+DIRECCION_PARTES = DIRECCION_PARTES_REQUERIDAS + ["numero_interior"]
+
+# Más de 5 dígitos iguales consecutivos en un teléfono (6 o más).
+TELEFONO_REPETIDOS_RE = re.compile(r"(\d)\1{5}")
 
 
 class Validator:
@@ -67,10 +80,13 @@ class Validator:
         return base
 
     def _es_mexicano(self, texto) -> bool:
-        """Determina si un texto (país o nacionalidad) se refiere a México."""
+        """Determina si un texto (país o nacionalidad) se refiere a México.
+
+        Reconoce México por el catálogo de países (México/MX/MEX/484) y la
+        nacionalidad por adjetivo (Mexicana/Mexicano)."""
         if pd.isna(texto) or texto == '':
             return False
-        return normalizar_texto(str(texto)).upper() in self._VARIANTES_MEXICO
+        return es_mexico(texto) or normalizar_texto(str(texto)).upper() in self._VARIANTES_MEXICO
 
     def _normalizar_entidad(self, entidad) -> str:
         if pd.isna(entidad) or entidad == '':
@@ -157,13 +173,28 @@ class Validator:
         valor = self._get_valor(row, 'nombre')
         if pd.isna(valor) or valor == '':
             return "Nombre vacío"
-        # El requisito de "nombre + apellido" (al menos un espacio) aplica solo a
-        # persona física; una razón social de persona moral puede ser una sola palabra.
+        # Caso 1: el nombre viene dividido en columnas (nombre + apellidos). Se
+        # exige el nombre y al menos uno de los apellidos (paterno o materno).
+        # Las personas morales no tienen apellidos (razón social).
+        if self.col_mapping.get('apellido_paterno') or self.col_mapping.get('apellido_materno'):
+            if self._es_moral_row(row):
+                return None
+            ap = self._get_valor(row, 'apellido_paterno')
+            am = self._get_valor(row, 'apellido_materno')
+            ap_ok = not (pd.isna(ap) or str(ap).strip() == '')
+            am_ok = not (pd.isna(am) or str(am).strip() == '')
+            if not (ap_ok or am_ok):
+                return "Falta al menos un apellido (paterno o materno)"
+            return None
+        # Caso 2: nombre en una sola columna. El requisito de "nombre + apellido"
+        # (al menos un espacio) aplica solo a persona física; una razón social de
+        # persona moral puede ser una sola palabra.
         if self._es_moral_row(row):
             return None
         if valor.count(' ') < 1:
             return "Nombre incompleto (debe tener al menos un espacio)"
         return None
+
 
     def _validar_fecha_nacimiento(self, row):
         col = self.col_mapping.get('fecha_nacimiento')
@@ -187,8 +218,8 @@ class Validator:
             edad = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
             if edad < 18:
                 return f"Edad {edad} años menor a 18"
-            elif edad > 120:
-                return f"Edad {edad} años mayor a 120"
+            elif edad > 110:
+                return f"Edad {edad} años mayor a 110"
         except (ValueError, TypeError):
             return "Fecha no procesable"
         return None
@@ -278,11 +309,17 @@ class Validator:
         valor = self._get_valor(row, 'Pais_nacimiento')
         if pd.isna(valor) or valor == '':
             return "País de nacimiento vacío"
+        if not es_pais_valido(valor):
+            return f"País de nacimiento '{valor}' no reconocido"
         return None
 
     def _validar_entidad_federativa(self, row):
-        entidad = self._get_valor(row, 'entidad_federativa')
+        # Esta validacion no aplica para extranjeros (Bancos): si el país de
+        # nacimiento está informado y no es México, no se valida la entidad.
         pais = self._get_valor(row, 'Pais_nacimiento')
+        if not (pd.isna(pais) or str(pais).strip() == '') and not self._es_mexicano(pais):
+            return None
+        entidad = self._get_valor(row, 'entidad_federativa')
         if pd.isna(entidad) or entidad == '':
             return "Entidad federativa vacía"
         if self._es_mexicano(pais):
@@ -298,16 +335,19 @@ class Validator:
             return "Ambas actividades vacías"
         return None
 
-    def _validar_telefono(self, row):
+    def _validate_telefono_row(self, row):
         valor = self._get_valor(row, 'Teléfono')
-        if pd.isna(valor) or valor == '':
-            return "Teléfono vacío"
+        if pd.isna(valor) or str(valor).strip() == '':
+            return None
         telefono_limpio = re.sub(r'\D', '', str(valor))
-        if len(telefono_limpio) < TELEFONO_MIN_DIGITOS:
-            return f"Teléfono con {len(telefono_limpio)} dígitos, mínimo {TELEFONO_MIN_DIGITOS}"
-        if re.search(r'(\d)\1{4}', telefono_limpio):
-            return "Teléfono con 5 dígitos consecutivos repetidos"
-        return None
+        if telefono_limpio in ('', 'nan'):
+            return None
+        errores = []
+        if len(telefono_limpio) != TELEFONO_MIN_DIGITOS:
+            errores.append(f"Longitud {len(telefono_limpio)}, se esperan {TELEFONO_MIN_DIGITOS}")
+        if TELEFONO_REPETIDOS_RE.search(telefono_limpio):
+            errores.append("Más de 5 dígitos iguales consecutivos")
+        return "; ".join(errores) if errores else None
 
     def _validar_correo(self, row):
         valor = self._get_valor(row, 'Correo electronico')
@@ -331,6 +371,16 @@ class Validator:
             errors.append("Caracteres no permitidos")
         if errors:
             return "; ".join(errors)
+        # Validación por estructura (18): 4 letras + 6 números + género (pos 11) +
+        # 5 letras + 2 números.
+        if not re.match(r'^[A-Z]{4}', curp):
+            errors.append("Primeros 4 caracteres no son letras")
+        if not re.match(r'^[0-9]{6}$', curp[4:10]):
+            errors.append("Caracteres 5-10 no son números")
+        if not re.match(r'^[A-Z]{5}$', curp[11:16]):
+            errors.append("Caracteres 12-16 no son letras")
+        if not re.match(r'^[0-9]{2}$', curp[16:18]):
+            errors.append("Últimos 2 caracteres no son números")
         col_genero = self.col_mapping.get('genero')
         if col_genero and col_genero in self.df.columns:
             gender_data = str(row[col_genero]).strip().upper()
@@ -342,6 +392,8 @@ class Validator:
             if expected and curp[10] != expected:
                 errors.append(f"Error Género: Esperado '{expected}', Obtenido '{curp[10]}'")
         return "; ".join(errors) if errors else None
+    
+    # Agregar validacion por estrutura logica 
 
     def _validate_rfc_row(self, row):
         col_rfc = self.col_mapping.get('RFC')
@@ -369,13 +421,35 @@ class Validator:
         return "; ".join(errors) if errors else None
 
     def _validar_direccion(self, row):
-        valor = self._get_valor(row, 'Dirección')
-        if pd.isna(valor) or valor == '':
-            return "Dirección vacía"
-        direc = str(valor)
-        if direc.count(' ') + direc.count(',') < DIRECCION_MIN_SEPARADORES:
-            return f"Dirección muy corta (menos de {DIRECCION_MIN_SEPARADORES} separadores)"
-        return None
+        # Agregar validacion cuando la direccion viene dividida en columnas.
+        col_dir = self.col_mapping.get('Dirección')
+        # Caso 1: domicilio en una sola columna (tiene precedencia si está mapeada).
+        if col_dir and col_dir in self.df.columns:
+            valor = self._get_valor(row, 'Dirección')
+            if pd.isna(valor) or valor == '':
+                return "Dirección vacía"
+            direc = str(valor)
+            if direc.count(' ') + direc.count(',') < DIRECCION_MIN_SEPARADORES:
+                return f"Dirección muy corta (menos de {DIRECCION_MIN_SEPARADORES} separadores)"
+            return None
+        # Caso 2: domicilio dividido en columnas. Se valida que cada parte
+        # obligatoria mapeada venga llena (numero_interior es opcional) y que el
+        # país, si se informa, sea reconocido.
+        if any(self.col_mapping.get(c) for c in DIRECCION_PARTES):
+            problemas = []
+            faltantes = [campo for campo in DIRECCION_PARTES_REQUERIDAS
+                         if self.col_mapping.get(campo)
+                         and (lambda v: pd.isna(v) or str(v).strip() == '')(self._get_valor(row, campo))]
+            if faltantes:
+                problemas.append("falta " + ", ".join(faltantes))
+            if self.col_mapping.get('pais'):
+                v = self._get_valor(row, 'pais')
+                if not (pd.isna(v) or str(v).strip() == '') and not es_pais_valido(v):
+                    problemas.append(f"país '{v}' no reconocido")
+            if problemas:
+                return "Domicilio incompleto: " + "; ".join(problemas)
+            return None
+        return "Dirección vacía"
 
     def _validar_nivel_cuenta(self, row):
         valor = self._get_valor(row, 'Nivel_cuenta')
@@ -527,22 +601,17 @@ class Validator:
                 errores_dataframes['Menores de 18 Años'] = df_men
                 errores_totales += len(df_men)
 
-        # 6. Teléfonos
+        # 6. Teléfonos (longitud y dígitos repetidos)
         col_tel = self.col_mapping.get('Teléfono')
         if col_tel and col_tel in self.df.columns:
             df_temp = self.df.copy()
-            df_temp['Telefono_cleaned'] = df_temp[col_tel].astype(str).str.replace(r'[^0-9]', '', regex=True)
-            invalidos_idx = (
-                (df_temp['Telefono_cleaned'].str.len() != TELEFONO_MIN_DIGITOS) &
-                (df_temp['Telefono_cleaned'] != '') &
-                (df_temp['Telefono_cleaned'] != 'nan')
-            )
+            df_temp['Telefono_Errors'] = df_temp.apply(self._validate_telefono_row, axis=1)
+            invalidos_idx = df_temp['Telefono_Errors'].notna()
             if invalidos_idx.any():
                 base = self._obtener_columnas_base()
                 cols = list(base.values()) + [col_tel]
                 df_inv = self.df.loc[invalidos_idx, cols].copy()
-                df_inv['Telefono_cleaned'] = df_temp.loc[invalidos_idx, 'Telefono_cleaned']
-                df_inv['Tipo_Error'] = 'Longitud de teléfono incorrecta'
+                df_inv['Tipo_Error'] = df_temp.loc[invalidos_idx, 'Telefono_Errors']
                 errores_dataframes['Telefonos Invalidos'] = df_inv
                 errores_totales += len(df_inv)
 

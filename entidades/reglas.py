@@ -12,6 +12,9 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from core.utils import normalizar_texto, ESTADOS_MEXICANOS_NORM
+from core.paises import es_pais_valido
+
 
 @dataclass
 class Contexto:
@@ -254,15 +257,8 @@ def r_rfc() -> Regla:
     return f
 
 
-_ESTADOS_MX = {
-    "AGUASCALIENTES", "BAJA CALIFORNIA", "BAJA CALIFORNIA SUR", "CAMPECHE",
-    "COAHUILA", "COLIMA", "CHIAPAS", "CHIHUAHUA", "CIUDAD DE MEXICO",
-    "DURANGO", "GUANAJUATO", "GUERRERO", "HIDALGO", "JALISCO", "MEXICO",
-    "MICHOACAN", "MORELOS", "NAYARIT", "NUEVO LEON", "OAXACA", "PUEBLA",
-    "QUERETARO", "QUINTANA ROO", "SAN LUIS POTOSI", "SINALOA", "SONORA",
-    "TABASCO", "TAMAULIPAS", "TLAXCALA", "VERACRUZ", "YUCATAN", "ZACATECAS", "CDMX",
-}
-_VARIANTES_MX = {"MEXICO", "MEXICANA", "MEX", "MX"}
+# Variantes de país que se consideran México (normalizadas).
+_VARIANTES_MX = {normalizar_texto(v).upper() for v in ("Mexico", "Mexicana", "Mex", "MX")}
 
 
 def r_entidad_federativa_mx() -> Regla:
@@ -270,9 +266,20 @@ def r_entidad_federativa_mx() -> Regla:
         if es_vacio(valor):
             return "Entidad federativa vacia"
         pais = ctx.get("pais_nacimiento") or ctx.get("Pais_nacimiento")
-        if not es_vacio(pais) and _norm(pais) in _VARIANTES_MX:
-            if _norm(valor) not in _ESTADOS_MX:
+        # No aplica a extranjeros: solo se valida el estado si el país es México.
+        if not es_vacio(pais) and normalizar_texto(str(pais)).upper() in _VARIANTES_MX:
+            if normalizar_texto(str(valor)).upper() not in ESTADOS_MEXICANOS_NORM:
                 return f"Entidad '{valor}' no valida para Mexico"
+        return None
+    return f
+
+
+def r_pais_valido() -> Regla:
+    def f(valor, ctx):
+        if es_vacio(valor):
+            return None
+        if not es_pais_valido(valor):
+            return f"Pais '{valor}' no reconocido"
         return None
     return f
 
@@ -338,6 +345,8 @@ CATALOGO: dict[str, ReglaCatalogo] = {
     "rfc": ReglaCatalogo("rfc", "RFC fisica (Mexico)", "13: 4 letras, 6 digitos, 3 alfanum.", r_rfc),
     "entidad_federativa_mx": ReglaCatalogo("entidad_federativa_mx", "Entidad federativa (Mexico)",
         "Estado valido si pais es Mexico.", r_entidad_federativa_mx),
+    "pais_valido": ReglaCatalogo("pais_valido", "Pais valido (ISO)",
+        "Pais reconocido por nombre, ISO alfa-2/3 o clave numerica.", r_pais_valido),
 }
 
 
