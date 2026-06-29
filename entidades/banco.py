@@ -52,6 +52,13 @@ _CORPORATIVO_MORAL = [
 ]
 # Identificación oficial: número + tipo (INE, pasaporte, etc.).
 _IDENTIFICACION = ["numero_identificacion", "tipo_identificacion"]
+# Nivel 3 Limitada: requisito ÚNICO para ambos tipos de persona y ambas
+# modalidades. Campos comunes a física y moral (sin los exclusivos de física
+# como CURP/género, que igual se validan aparte) + identificación oficial.
+_N3_LIMITADA = [
+    "nombre", "fecha_nacimiento", "Nacionalidad", "Actividad_generica",
+    "Dirección", "Teléfono", "Correo electronico", "RFC",
+] + _IDENTIFICACION
 REQUISITOS_BANCO = [
     # Nivel 1 y 2: exclusivos de persona física.
     _N("1", "fisica", "presencial", ["nombre", "fecha_nacimiento"]),
@@ -63,10 +70,9 @@ REQUISITOS_BANCO = [
     # (sus diferencias en el marco son documentales, no de datos).
     _N("3", "fisica", "ambas", _DEMOGRAFICOS_FISICA),
     _N("3", "moral", "ambas", _CORPORATIVO_MORAL),
-    # Nivel 3 Limitada ("3L"): mismas validaciones que nivel 3 + identificación
-    # oficial (número y tipo).
-    _N("3L", "fisica", "ambas", _DEMOGRAFICOS_FISICA + _IDENTIFICACION),
-    _N("3L", "moral", "ambas", _CORPORATIVO_MORAL + _IDENTIFICACION),
+    # Nivel 3 Limitada ("3L"): mismo requisito para ambos tipos de persona y
+    # ambas modalidades de apertura.
+    _N("3L", "ambos", "ambas", _N3_LIMITADA),
     _N("4", "fisica", "ambas", _DEMOGRAFICOS_FISICA),
     _N("4", "moral", "ambas", _CORPORATIVO_MORAL),
 ]
