@@ -101,6 +101,9 @@ class EntidadConfig:
     campo_nivel: str = ""            # campo lógico que contiene el nivel (1-4)
     campo_tipo_persona: str = ""     # campo lógico física/moral (opcional)
     campo_modalidad: str = ""        # campo lógico presencial/remota (opcional)
+    # Sinónimos de nivel: {valor en los datos -> nivel canónico}, p. ej.
+    # {"Tradicional": "4", "Básica": "2"}. Se suman a los reconocidos por defecto.
+    aliases_nivel: dict[str, str] = field(default_factory=dict)
     # Límites de operación por nivel (montos). Requiere designar los campos de
     # operación (roles: fecha, monto, cuenta, cliente, nivel, tipo_persona,
     # tipo_operacion, instrumento -> nombre lógico) y qué valores cuentan como
@@ -120,6 +123,7 @@ class EntidadConfig:
             "campo_nivel": self.campo_nivel,
             "campo_tipo_persona": self.campo_tipo_persona,
             "campo_modalidad": self.campo_modalidad,
+            "aliases_nivel": dict(self.aliases_nivel),
             "limites_operacion": [l.to_dict() for l in self.limites_operacion],
             "op_campos": dict(self.op_campos),
             "op_valores_abono": list(self.op_valores_abono),
@@ -137,6 +141,7 @@ class EntidadConfig:
             campo_nivel=d.get("campo_nivel", ""),
             campo_tipo_persona=d.get("campo_tipo_persona", ""),
             campo_modalidad=d.get("campo_modalidad", ""),
+            aliases_nivel=dict(d.get("aliases_nivel", {})),
             limites_operacion=[LimiteOperacion.from_dict(l) for l in d.get("limites_operacion", [])],
             op_campos=dict(d.get("op_campos", {})),
             op_valores_abono=list(d.get("op_valores_abono", [])),

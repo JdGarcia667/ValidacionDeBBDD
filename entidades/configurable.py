@@ -83,12 +83,14 @@ class EntidadConfigurable(ValidadorEntidad):
         if not self.config.limites_operacion or not self.config.op_campos:
             return None
         from core.limites_operaciones import LimitesOperaciones
+        from core.niveles import construir_aliases_nivel
         return LimitesOperaciones(
             df, mapeo, self.config.limites_operacion, campos=self.config.op_campos,
             valores_abono=self.config.op_valores_abono,
             valores_efectivo=self.config.op_valores_efectivo,
             archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
-            archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
+            archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"),
+            aliases_nivel=construir_aliases_nivel(self.config.aliases_nivel))
 
     def _limites_memoria(self, df, mapeo, config) -> dict:
         lim = self._limites_validador(df, mapeo, config)
@@ -186,13 +188,14 @@ class EntidadConfigurable(ValidadorEntidad):
         """Requisitos por nivel de cuenta (solo clientes), si la entidad los define."""
         if not self.config.requisitos_cliente or not self.config.campo_nivel:
             return []
-        from core.niveles import validar_requisitos
+        from core.niveles import validar_requisitos, construir_aliases_nivel
         out = []
         for h in validar_requisitos(
                 df, mapeo, self.config.requisitos_cliente,
                 campo_nivel=self.config.campo_nivel,
                 campo_tipo_persona=self.config.campo_tipo_persona,
-                campo_modalidad=self.config.campo_modalidad):
+                campo_modalidad=self.config.campo_modalidad,
+                aliases_nivel=construir_aliases_nivel(self.config.aliases_nivel)):
             ctx = f"{h['nivel']}/{h['tipo']}/{h['modalidad']}"
             out.append(_h(h["fila"], h["id_cliente"], h["campo"], h["columna"],
                           ctx, h["Tipo_Error"]))

@@ -14,17 +14,24 @@ from core.paises import es_mexico, es_pais_valido
 
 logger = logging.getLogger(__name__)
 
-# Partes del domicilio cuando viene dividido en columnas. 'numero_interior' es
-# opcional; el resto son obligatorias si el domicilio se valida por columnas.
-DIRECCION_PARTES_REQUERIDAS = [
-    "calle_avenida_via", "numero_exterior", "colonia_urbanizacion",
-    "alcaldia_municipio", "ciudad_poblacion", "entidad_federativa_estado",
-    "codigo_postal", "pais",
+# Partes del domicilio cuando viene dividido en columnas:
+#  - obligatorias: calle, número exterior, entidad federativa, CP y país.
+#  - ciudad o alcaldía/municipio: al menos una de las dos.
+#  - opcionales: colonia/urbanización y número interior.
+DIRECCION_OBLIGATORIAS = [
+    "calle_avenida_via", "numero_exterior",
+    "entidad_federativa_estado", "codigo_postal", "pais",
 ]
-DIRECCION_PARTES = DIRECCION_PARTES_REQUERIDAS + ["numero_interior"]
+DIRECCION_CIUDAD_ALCALDIA = ["ciudad_poblacion", "alcaldia_municipio"]
+DIRECCION_OPCIONALES = ["colonia_urbanizacion", "numero_interior"]
+DIRECCION_PARTES = DIRECCION_OBLIGATORIAS + DIRECCION_CIUDAD_ALCALDIA + DIRECCION_OPCIONALES
 
 # Más de 5 dígitos iguales consecutivos en un teléfono (6 o más).
 TELEFONO_REPETIDOS_RE = re.compile(r"(\d)\1{5}")
+
+
+def _celda_vacia(v) -> bool:
+    return pd.isna(v) or str(v).strip() == ''
 
 
 class Validator:
@@ -432,19 +439,25 @@ class Validator:
             if direc.count(' ') + direc.count(',') < DIRECCION_MIN_SEPARADORES:
                 return f"Dirección muy corta (menos de {DIRECCION_MIN_SEPARADORES} separadores)"
             return None
-        # Caso 2: domicilio dividido en columnas. Se valida que cada parte
-        # obligatoria mapeada venga llena (numero_interior es opcional) y que el
-        # país, si se informa, sea reconocido.
+        # Caso 2: domicilio dividido en columnas.
+        #  - obligatorias: calle, número exterior, entidad, CP, país.
+        #  - ciudad o alcaldía/municipio: al menos una.
+        #  - colonia y número interior: opcionales.
         if any(self.col_mapping.get(c) for c in DIRECCION_PARTES):
             problemas = []
-            faltantes = [campo for campo in DIRECCION_PARTES_REQUERIDAS
+            faltantes = [campo for campo in DIRECCION_OBLIGATORIAS
                          if self.col_mapping.get(campo)
-                         and (lambda v: pd.isna(v) or str(v).strip() == '')(self._get_valor(row, campo))]
+                         and _celda_vacia(self._get_valor(row, campo))]
             if faltantes:
                 problemas.append("falta " + ", ".join(faltantes))
+            # Ciudad o alcaldía/municipio: se exige al menos una si alguna está mapeada.
+            if any(self.col_mapping.get(c) for c in DIRECCION_CIUDAD_ALCALDIA):
+                if not any(not _celda_vacia(self._get_valor(row, c))
+                           for c in DIRECCION_CIUDAD_ALCALDIA if self.col_mapping.get(c)):
+                    problemas.append("falta ciudad o alcaldía/municipio")
             if self.col_mapping.get('pais'):
                 v = self._get_valor(row, 'pais')
-                if not (pd.isna(v) or str(v).strip() == '') and not es_pais_valido(v):
+                if not _celda_vacia(v) and not es_pais_valido(v):
                     problemas.append(f"país '{v}' no reconocido")
             if problemas:
                 return "Domicilio incompleto: " + "; ".join(problemas)

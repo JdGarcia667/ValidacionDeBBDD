@@ -555,6 +555,10 @@ class App:
                                      value="IN, ABONO, DEPOSITO")
         self.tf_efectivo = ft.TextField(label="Valores de EFECTIVO (coma)", width=300, dense=True,
                                         value="EFECTIVO")
+        # Sinónimos de nivel: para mapear valores que no dicen "1/2/3/4".
+        self.tf_aliases_nivel = ft.TextField(
+            label="Sinónimos de nivel (alias=nivel, coma)", width=420, dense=True,
+            hint_text="Ej: Tradicional=4, Básica=2, Limitada=3L")
         self._refrescar_opciones_op()
 
         cuerpo = ft.Container(width=640, content=ft.Column([
@@ -573,6 +577,10 @@ class App:
             ft.Text("Indica qué campos llevan el nivel/tipo/modalidad y agrega, por nivel, "
                     "los campos que deben venir llenos.", size=11, color=ft.Colors.GREY_700),
             ft.Row([self.dd_campo_nivel, self.dd_campo_tipo, self.dd_campo_modalidad], wrap=True),
+            ft.Text("Si la columna de nivel no dice '1/2/3/4', mapea sus valores "
+                    "(Tradicional→4 y Limitada→3L ya se reconocen):",
+                    size=11, color=ft.Colors.GREY_700),
+            self.tf_aliases_nivel,
             self.lista_niveles,
             ft.TextButton("Agregar requisito de nivel", icon=ft.Icons.ADD,
                           on_click=lambda e: self._editar_requisito_nivel()),
@@ -659,7 +667,7 @@ class App:
             self._toast("Primero agrega campos de cliente.")
             return
         dd_nivel = ft.Dropdown(label="Nivel", width=110, value="1",
-                               options=[ft.dropdown.Option(n) for n in ["1", "2", "3", "4"]])
+                               options=[ft.dropdown.Option(n) for n in ["1", "2", "3", "3L", "4"]])
         dd_tipo = ft.Dropdown(label="Tipo persona", width=160, value="ambos",
                               options=[ft.dropdown.Option(t) for t in ["ambos", "fisica", "moral"]])
         dd_mod = ft.Dropdown(label="Modalidad", width=170, value="ambas",
@@ -705,7 +713,7 @@ class App:
                                   options=[ft.dropdown.Option("abono_mensual"),
                                            ft.dropdown.Option("efectivo_usd")])
         dd_nivel = ft.Dropdown(label="Nivel", width=120, value="todos",
-                               options=[ft.dropdown.Option(n) for n in ["todos", "1", "2", "3", "4"]])
+                               options=[ft.dropdown.Option(n) for n in ["todos", "1", "2", "3", "3L", "4"]])
         dd_tipo = ft.Dropdown(label="Tipo persona", width=150, value="ambos",
                               options=[ft.dropdown.Option(t) for t in ["ambos", "fisica", "moral"]])
         tf_limite = ft.TextField(label="Límite (vacío = sin límite)", width=200)
@@ -781,6 +789,13 @@ class App:
                         "de FECHA y MONTO.")
             return
         _csv = lambda s: [x.strip() for x in (s or "").split(",") if x.strip()]
+        # Sinónimos de nivel: "alias=nivel, alias=nivel".
+        aliases_nivel = {}
+        for par in _csv(self.tf_aliases_nivel.value):
+            if "=" in par:
+                alias, niv = par.split("=", 1)
+                if alias.strip() and niv.strip():
+                    aliases_nivel[alias.strip()] = niv.strip()
 
         cfg = EntidadConfig(nombre=nombre, descripcion=(self.nuevo_desc.value or "").strip(),
                             campos_cliente=self.campos_cli, campos_operacion=self.campos_ops,
@@ -788,6 +803,7 @@ class App:
                             campo_nivel=campo_nivel,
                             campo_tipo_persona=_designado(self.dd_campo_tipo),
                             campo_modalidad=_designado(self.dd_campo_modalidad),
+                            aliases_nivel=aliases_nivel,
                             limites_operacion=self.limites_op, op_campos=op_campos,
                             op_valores_abono=_csv(self.tf_abono.value),
                             op_valores_efectivo=_csv(self.tf_efectivo.value))

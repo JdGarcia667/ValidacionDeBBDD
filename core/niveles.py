@@ -11,7 +11,27 @@ import re
 
 import pandas as pd
 
-NIVELES = ["1", "2", "3", "4"]
+from core.utils import normalizar_texto
+
+NIVELES = ["1", "2", "3", "3L", "4"]
+
+
+def construir_aliases_nivel(pares) -> dict:
+    """Normaliza un mapa {alias: nivel} para búsqueda robusta (sin acentos, mayúsculas)."""
+    out = {}
+    for alias, nivel in (pares or {}).items():
+        clave = normalizar_texto(str(alias)).upper()
+        if clave:
+            out[clave] = str(nivel)
+    return out
+
+
+# Sinónimos de nivel reconocidos por defecto cuando la columna no dice "1/2/3/4".
+_ALIASES_NIVEL_DEFAULT = construir_aliases_nivel({
+    "Tradicional": "4", "Tradicionales": "4", "Cuenta Tradicional": "4",
+    "Cuentas Tradicionales": "4", "Sin limite": "4", "Ilimitada": "4",
+    "Limitada": "3L", "Cuenta Limitada": "3L", "Nivel 3 Limitada": "3L",
+})
 
 
 def _vacio(v) -> bool:
@@ -32,12 +52,27 @@ def _fila(idx):
         return idx
 
 
-def normalizar_nivel(valor) -> str | None:
-    """Extrae '1'..'4' de un valor de nivel (admite 'Nivel 2', '2', 2.0...)."""
+def normalizar_nivel(valor, aliases=None) -> str | None:
+    """Mapea el valor de la columna de nivel a '1'..'4' o '3L'.
+
+    Reconoce: dígito explícito ('Nivel 2', '2', 2.0...), la variante '3L'
+    (nivel 3 Limitada: 'N3 Limitada', '3 Limitada', '3L', 'N3L') y sinónimos por
+    nombre (p. ej. 'Tradicional' -> '4', 'Limitada' -> '3L'). `aliases` agrega o
+    sobreescribe sinónimos propios de la entidad (ya normalizados)."""
     if _vacio(valor):
         return None
-    m = re.search(r"[1-4]", str(valor))
-    return m.group(0) if m else None
+    mapa = _ALIASES_NIVEL_DEFAULT if not aliases else {**_ALIASES_NIVEL_DEFAULT, **aliases}
+    clave = normalizar_texto(str(valor)).upper()
+    if clave in mapa:
+        return mapa[clave]
+    t = str(valor).strip().lower()
+    m = re.search(r"[1-4]", t)
+    if not m:
+        return None
+    nivel = m.group(0)
+    if nivel == "3" and re.search(r"limitad|3\s*l\b", t):
+        return "3L"
+    return nivel
 
 
 def normalizar_modalidad(valor, default: str = "presencial") -> str:
@@ -87,7 +122,8 @@ def _tipos_por_nivel(requisitos) -> dict[str, set]:
 
 def validar_requisitos(df, mapeo, requisitos, *, campo_nivel, campo_tipo_persona="",
                        campo_modalidad="", default_modalidad="presencial",
-                       default_tipo="fisica", id_logico="id_cliente") -> list[dict]:
+                       default_tipo="fisica", id_logico="id_cliente",
+                       aliases_nivel=None) -> list[dict]:
     """Devuelve una lista de hallazgos (dicts) por campos faltantes según el nivel.
 
     Cada hallazgo: {fila, id_cliente, nivel, tipo, modalidad, campo, columna, Tipo_Error}.
@@ -106,7 +142,7 @@ def validar_requisitos(df, mapeo, requisitos, *, campo_nivel, campo_tipo_persona
 
     out: list[dict] = []
     for idx, row in df.iterrows():
-        nivel = normalizar_nivel(row[col_nivel])
+        nivel = normalizar_nivel(row[col_nivel], aliases_nivel)
         if nivel is None or nivel not in niveles_def:
             continue  # nivel vacío o no configurado: lo cubre otra validación
         tipo = tipo_de(row[col_tipo], default_tipo) if (col_tipo and col_tipo in df.columns) else default_tipo

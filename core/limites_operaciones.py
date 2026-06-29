@@ -64,7 +64,7 @@ def _upper(valores):
 class LimitesOperaciones:
     def __init__(self, df, mapeo, limites, *, campos, valores_abono, valores_efectivo,
                  archivo_udis=None, mapeo_udis=None, archivo_tc=None, mapeo_tc=None,
-                 default_tipo="fisica"):
+                 default_tipo="fisica", aliases_nivel=None):
         self.df = df
         self.mapeo = mapeo
         self.limites = limites or []
@@ -72,6 +72,7 @@ class LimitesOperaciones:
         self.valores_abono = valores_abono
         self.valores_efectivo = valores_efectivo
         self.default_tipo = default_tipo
+        self.aliases_nivel = aliases_nivel
         self.tasas_udis = _cargar_tasas(archivo_udis, mapeo_udis)
         self.tasas_tc = _cargar_tasas(archivo_tc, mapeo_tc)
 
@@ -102,7 +103,7 @@ class LimitesOperaciones:
         w["monto"] = monto[mask]
         w["cuenta"] = df.loc[mask, col_cuenta].astype(str) if col_cuenta else ""
         w["cliente"] = df.loc[mask, col_cliente].astype(str) if col_cliente else ""
-        w["nivel"] = (df.loc[mask, col_nivel].map(normalizar_nivel)
+        w["nivel"] = (df.loc[mask, col_nivel].map(lambda v: normalizar_nivel(v, self.aliases_nivel))
                       if col_nivel and col_nivel in df.columns else None)
         w["tipo"] = (df.loc[mask, col_tipo].map(lambda v: tipo_de(v, self.default_tipo))
                      if col_tipo and col_tipo in df.columns else self.default_tipo)

@@ -27,6 +27,8 @@ CAMPOS_CLIENTE = [
     "grado_riesgo", "fecha_riesgo", "PEP", "Nacionalidad", "Pais_nacimiento",
     "entidad_federativa", "Actividad_generica", "Actividad_especifica",
     "Teléfono", "Correo electronico", "CURP", "RFC", "Dirección",
+    # Identificación oficial (requerida en nivel 3 Limitada).
+    "numero_identificacion", "tipo_identificacion",
     # Domicilio dividido en columnas (opcional; alternativa a 'Dirección').
     "calle_avenida_via", "numero_exterior", "numero_interior",
     "colonia_urbanizacion", "alcaldia_municipio", "ciudad_poblacion",
@@ -48,6 +50,8 @@ _CORPORATIVO_MORAL = [
     "nombre", "Actividad_generica", "Nacionalidad", "RFC", "Dirección",
     "Teléfono", "Correo electronico", "fecha_nacimiento",  # fecha = constitución
 ]
+# Identificación oficial: número + tipo (INE, pasaporte, etc.).
+_IDENTIFICACION = ["numero_identificacion", "tipo_identificacion"]
 REQUISITOS_BANCO = [
     # Nivel 1 y 2: exclusivos de persona física.
     _N("1", "fisica", "presencial", ["nombre", "fecha_nacimiento"]),
@@ -59,6 +63,10 @@ REQUISITOS_BANCO = [
     # (sus diferencias en el marco son documentales, no de datos).
     _N("3", "fisica", "ambas", _DEMOGRAFICOS_FISICA),
     _N("3", "moral", "ambas", _CORPORATIVO_MORAL),
+    # Nivel 3 Limitada ("3L"): mismas validaciones que nivel 3 + identificación
+    # oficial (número y tipo).
+    _N("3L", "fisica", "ambas", _DEMOGRAFICOS_FISICA + _IDENTIFICACION),
+    _N("3L", "moral", "ambas", _CORPORATIVO_MORAL + _IDENTIFICACION),
     _N("4", "fisica", "ambas", _DEMOGRAFICOS_FISICA),
     _N("4", "moral", "ambas", _CORPORATIVO_MORAL),
 ]
