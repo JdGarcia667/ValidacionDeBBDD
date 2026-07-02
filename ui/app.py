@@ -558,7 +558,7 @@ class App:
         # Sinónimos de nivel: para mapear valores que no dicen "1/2/3/4".
         self.tf_aliases_nivel = ft.TextField(
             label="Sinónimos de nivel (alias=nivel, coma)", width=420, dense=True,
-            hint_text="Ej: Tradicional=4, Básica=2, Limitada=3L")
+            hint_text="Ej: Tradicional=4, Básica=2, Limitada=3L, Limitada 4=4L")
         self._refrescar_opciones_op()
 
         cuerpo = ft.Container(width=640, content=ft.Column([
@@ -578,7 +578,7 @@ class App:
                     "los campos que deben venir llenos.", size=11, color=ft.Colors.GREY_700),
             ft.Row([self.dd_campo_nivel, self.dd_campo_tipo, self.dd_campo_modalidad], wrap=True),
             ft.Text("Si la columna de nivel no dice '1/2/3/4', mapea sus valores "
-                    "(Tradicional→4 y Limitada→3L ya se reconocen):",
+                    "(Tradicional→4, Limitada→3L y Limitada 4→4L ya se reconocen):",
                     size=11, color=ft.Colors.GREY_700),
             self.tf_aliases_nivel,
             self.lista_niveles,
@@ -667,7 +667,7 @@ class App:
             self._toast("Primero agrega campos de cliente.")
             return
         dd_nivel = ft.Dropdown(label="Nivel", width=110, value="1",
-                               options=[ft.dropdown.Option(n) for n in ["1", "2", "3", "3L", "4"]])
+                               options=[ft.dropdown.Option(n) for n in ["1", "2", "3", "3L", "4", "4L"]])
         dd_tipo = ft.Dropdown(label="Tipo persona", width=160, value="ambos",
                               options=[ft.dropdown.Option(t) for t in ["ambos", "fisica", "moral"]])
         dd_mod = ft.Dropdown(label="Modalidad", width=170, value="ambas",

@@ -13,7 +13,7 @@ import pandas as pd
 
 from core.utils import normalizar_texto
 
-NIVELES = ["1", "2", "3", "3L", "4"]
+NIVELES = ["1", "2", "3", "3L", "4", "4L"]
 
 
 def construir_aliases_nivel(pares) -> dict:
@@ -31,6 +31,7 @@ _ALIASES_NIVEL_DEFAULT = construir_aliases_nivel({
     "Tradicional": "4", "Tradicionales": "4", "Cuenta Tradicional": "4",
     "Cuentas Tradicionales": "4", "Sin limite": "4", "Ilimitada": "4",
     "Limitada": "3L", "Cuenta Limitada": "3L", "Nivel 3 Limitada": "3L",
+    "4 Limitada": "4L", "Nivel 4 Limitada": "4L",
 })
 
 
@@ -53,12 +54,13 @@ def _fila(idx):
 
 
 def normalizar_nivel(valor, aliases=None) -> str | None:
-    """Mapea el valor de la columna de nivel a '1'..'4' o '3L'.
+    """Mapea el valor de la columna de nivel a '1'..'4', '3L' o '4L'.
 
-    Reconoce: dígito explícito ('Nivel 2', '2', 2.0...), la variante '3L'
-    (nivel 3 Limitada: 'N3 Limitada', '3 Limitada', '3L', 'N3L') y sinónimos por
-    nombre (p. ej. 'Tradicional' -> '4', 'Limitada' -> '3L'). `aliases` agrega o
-    sobreescribe sinónimos propios de la entidad (ya normalizados)."""
+    Reconoce: dígito explícito ('Nivel 2', '2', 2.0...), las variantes
+    Limitada ('N3 Limitada', '3 Limitada', '3L', 'N3L' -> '3L'; análogo para
+    '4L') y sinónimos por nombre (p. ej. 'Tradicional' -> '4', 'Limitada' ->
+    '3L'). `aliases` agrega o sobreescribe sinónimos propios de la entidad
+    (ya normalizados)."""
     if _vacio(valor):
         return None
     mapa = _ALIASES_NIVEL_DEFAULT if not aliases else {**_ALIASES_NIVEL_DEFAULT, **aliases}
@@ -70,8 +72,8 @@ def normalizar_nivel(valor, aliases=None) -> str | None:
     if not m:
         return None
     nivel = m.group(0)
-    if nivel == "3" and re.search(r"limitad|3\s*l\b", t):
-        return "3L"
+    if nivel in ("3", "4") and re.search(rf"limitad|{nivel}\s*l\b", t):
+        return nivel + "L"
     return nivel
 
 

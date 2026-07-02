@@ -29,11 +29,19 @@ CAMPOS_CLIENTE = [
     "Teléfono", "Correo electronico", "CURP", "RFC", "Dirección",
     # Identificación oficial (requerida en nivel 3 Limitada).
     "numero_identificacion", "tipo_identificacion",
+    "firma electronica avanzada",
+    # Persona moral: representante legal (todas) e identificación fiscal
+    # extranjera (cuando la moral es extranjera; en ese caso no aplica RFC).
+    "representante_legal", "numero_identificacion_fiscal",
+    "pais_asignacion_rfc", "numero_serie_firma",
     # Domicilio dividido en columnas (opcional; alternativa a 'Dirección').
     "calle_avenida_via", "numero_exterior", "numero_interior",
     "colonia_urbanizacion", "alcaldia_municipio", "ciudad_poblacion",
     "entidad_federativa_estado", "codigo_postal", "pais",
     "Nivel_cuenta", "modalidad de apertura",
+    # Respuesta de la consulta a RENAPO (N1 y N3 remota) y geolocalización
+    # de la apertura de cuenta (N4 Limitada).
+    "Respuesta RENAPO", "Geolocalización",
 ]
 
 # Requisitos por nivel de cuenta (clientes). Mapeo del marco regulatorio a las
@@ -46,10 +54,12 @@ _DEMOGRAFICOS_FISICA = [
     "Nacionalidad", "Actividad_generica", "Dirección", "Teléfono",
     "Correo electronico", "CURP", "RFC",
 ]
-_CORPORATIVO_MORAL = [
+_CORPORATIVO_MORAL_BASE = [
     "nombre", "Actividad_generica", "Nacionalidad", "RFC", "Dirección",
-    "Teléfono", "Correo electronico", "fecha_nacimiento",  # fecha = constitución
+    "Teléfono", "fecha_nacimiento", "firma electronica avanzada" # fecha = constitución
 ]
+# En modalidad remota, persona moral exige adicionalmente correo electrónico.
+_CORPORATIVO_MORAL_REMOTA = _CORPORATIVO_MORAL_BASE + ["Correo electronico"]
 # Identificación oficial: número + tipo (INE, pasaporte, etc.).
 _IDENTIFICACION = ["numero_identificacion", "tipo_identificacion"]
 # Nivel 3 Limitada: requisito ÚNICO para ambos tipos de persona y ambas
@@ -59,22 +69,34 @@ _N3_LIMITADA = [
     "nombre", "fecha_nacimiento", "Nacionalidad", "Actividad_generica",
     "Dirección", "Teléfono", "Correo electronico", "RFC",
 ] + _IDENTIFICACION
+
 REQUISITOS_BANCO = [
     # Nivel 1 y 2: exclusivos de persona física.
     _N("1", "fisica", "presencial", ["nombre", "fecha_nacimiento"]),
-    _N("1", "fisica", "remota", ["nombre", "genero", "entidad_federativa", "fecha_nacimiento"]),
+    # N1 remota exige adicionalmente respuesta de RENAPO.
+    _N("1", "fisica", "remota",
+       ["nombre", "genero", "entidad_federativa", "fecha_nacimiento", "Respuesta RENAPO"]),
     _N("2", "fisica", "presencial", ["nombre", "fecha_nacimiento", "Dirección"]),
     _N("2", "fisica", "remota",
        ["nombre", "genero", "entidad_federativa", "fecha_nacimiento", "Dirección"]),
-    # Nivel 3 y 4: física y moral. En columnas de BBDD ambos niveles coinciden
-    # (sus diferencias en el marco son documentales, no de datos).
-    _N("3", "fisica", "ambas", _DEMOGRAFICOS_FISICA),
-    _N("3", "moral", "ambas", _CORPORATIVO_MORAL),
+    # Nivel 3: física y moral, diferenciados por modalidad. Remota exige
+    # además respuesta de RENAPO (ambos tipos) y correo (persona moral).
+    _N("3", "fisica", "presencial", _DEMOGRAFICOS_FISICA),
+    _N("3", "fisica", "remota", _DEMOGRAFICOS_FISICA + ["Respuesta RENAPO"]),
+    _N("3", "moral", "presencial", _CORPORATIVO_MORAL_BASE),
+    _N("3", "moral", "remota", _CORPORATIVO_MORAL_REMOTA + ["Respuesta RENAPO"]),
     # Nivel 3 Limitada ("3L"): mismo requisito para ambos tipos de persona y
     # ambas modalidades de apertura.
     _N("3L", "ambos", "ambas", _N3_LIMITADA),
+    # Nivel 4: física sin cambios por modalidad; moral exige correo solo en
+    # remota (en presencial es opcional).
     _N("4", "fisica", "ambas", _DEMOGRAFICOS_FISICA),
-    _N("4", "moral", "ambas", _CORPORATIVO_MORAL),
+    _N("4", "moral", "presencial", _CORPORATIVO_MORAL_BASE),
+    _N("4", "moral", "remota", _CORPORATIVO_MORAL_REMOTA),
+    # Nivel 4 Limitada ("4L"): mismos requisitos que N4 presencial (correo
+    # opcional para persona moral) más geolocalización obligatoria.
+    _N("4L", "fisica", "ambas", _DEMOGRAFICOS_FISICA + ["Geolocalización"]),
+    _N("4L", "moral", "ambas", _CORPORATIVO_MORAL_BASE + ["Geolocalización"]),
 ]
 
 # Campos requeridos para operaciones (identicos a core/mapper_operaciones.py)

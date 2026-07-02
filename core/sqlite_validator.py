@@ -89,6 +89,7 @@ class SQLiteValidator:
         col_id = col_map.get('id_cliente')
         col_nombre = col_map.get('nombre')
         col_curp = col_map.get('CURP')
+        col_firma = col_map.get('firma electronica avanzada')
         base_cols = list(dict.fromkeys(base.values()))  # sin repetidos, ordenado
 
         salida = {}
@@ -119,6 +120,43 @@ class SQLiteValidator:
                 if not df.empty:
                     df['Tipo_Error'] = 'Mismo CURP con nombre diferente'
                     salida['Nombres Duplicados (CURP)'] = df
+
+            # Firma electrónica avanzada duplicada (única por cliente)
+            if col_firma:
+                df = self._duplicados_col_sql(conn, base_cols, col_firma, col_id=col_id)
+                if not df.empty:
+                    df['Tipo_Error'] = 'Firma electrónica avanzada duplicada'
+                    salida['Firmas Duplicadas'] = df
+
+            # CURP asignado a más de un cliente (único)
+            if col_curp:
+                df = self._duplicados_col_sql(conn, base_cols, col_curp, col_id=col_id, upper=True)
+                if not df.empty:
+                    df['Tipo_Error'] = 'CURP asignado a más de un cliente'
+                    salida['CURPs Duplicados'] = df
+
+            # RFC asignado a más de un cliente (único)
+            col_rfc = col_map.get('RFC')
+            if col_rfc:
+                df = self._duplicados_col_sql(conn, base_cols, col_rfc, col_id=col_id, upper=True)
+                if not df.empty:
+                    df['Tipo_Error'] = 'RFC asignado a más de un cliente'
+                    salida['RFCs Duplicados'] = df
         finally:
             conn.close()
         return salida
+
+    @staticmethod
+    def _duplicados_col_sql(conn, base_cols, col, col_id=None, upper=False):
+        """Filas cuyo valor en `col` está en más de un cliente (ignorando vacíos).
+        La unicidad es por id_cliente distinto (si se conoce); si no, por fila.
+        Si upper, compara sin distinguir mayúsculas."""
+        expr = f"UPPER(TRIM({_q(col)}))" if upper else f"TRIM({_q(col)})"
+        cols = ", ".join(_q(c) for c in dict.fromkeys(base_cols + [col]))
+        valido = (f"TRIM({_q(col)}) <> '' AND "
+                  f"LOWER(TRIM({_q(col)})) NOT IN ('nan','none','null')")
+        having = (f"COUNT(DISTINCT TRIM({_q(col_id)})) > 1" if col_id else "COUNT(*) > 1")
+        q = (f"SELECT {cols} FROM {TABLA} WHERE {valido} AND {expr} IN "
+             f"(SELECT {expr} FROM {TABLA} WHERE {valido} "
+             f" GROUP BY {expr} HAVING {having})")
+        return pd.read_sql_query(q, conn)

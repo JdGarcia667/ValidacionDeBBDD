@@ -100,6 +100,16 @@ class Validator:
             return ''
         return normalizar_texto(str(entidad)).upper()
 
+    def _es_extranjero(self, row) -> bool:
+        """True si la nacionalidad o el país (de nacimiento/constitución) está
+        informado y NO es México."""
+        for campo in ('Nacionalidad', 'Pais_nacimiento'):
+            v = self._get_valor(row, campo)
+            if v is not None and not (pd.isna(v) or str(v).strip() == ''):
+                if not self._es_mexicano(v):
+                    return True
+        return False
+
     # ------------------------------------------------------------------
     # Tipo de persona (física / moral)
     # ------------------------------------------------------------------
@@ -359,6 +369,9 @@ class Validator:
     def _validar_correo(self, row):
         valor = self._get_valor(row, 'Correo electronico')
         if pd.isna(valor) or valor == '':
+            # El correo es opcional para persona moral extranjera.
+            if self._es_moral_row(row) and self._es_extranjero(row):
+                return None
             return "Correo vacío"
         if '@' not in str(valor):
             return "Correo sin @"
@@ -403,6 +416,10 @@ class Validator:
     # Agregar validacion por estrutura logica 
 
     def _validate_rfc_row(self, row):
+        # La persona moral extranjera no tiene RFC mexicano: usa su número de
+        # identificación fiscal, así que aquí no se valida el RFC.
+        if self._es_moral_row(row) and self._es_extranjero(row):
+            return None
         col_rfc = self.col_mapping.get('RFC')
         if not col_rfc or col_rfc not in self.df.columns:
             return "Columna RFC no encontrada"
@@ -470,6 +487,56 @@ class Validator:
             return "Nivel de cuenta vacío"
         return None
 
+    def _validar_firma_electronica(self, row):
+        # Firma electrónica avanzada (FIEL): solo números y 20 dígitos. Se valida
+        # el formato cuando viene informada (la unicidad se revisa entre filas).
+        valor = self._get_valor(row, 'firma electronica avanzada')
+        if valor is None or pd.isna(valor) or str(valor).strip() == '':
+            return None
+        s = str(valor).strip()
+        if not s.isdigit():
+            return "Firma electrónica avanzada: solo debe contener números"
+        if len(s) != 20:
+            return f"Firma electrónica avanzada: {len(s)} dígitos, deben ser 20"
+        return None
+
+    def _validar_representante_legal(self, row):
+        # Solo persona moral, y solo si la columna está mapeada: el representante
+        # legal debe traer nombre y al menos un apellido.
+        if not self._es_moral_row(row) or not self.col_mapping.get('representante_legal'):
+            return None
+        valor = self._get_valor(row, 'representante_legal')
+        if valor is None or pd.isna(valor) or str(valor).strip() == '':
+            return "Representante legal vacío"
+        if str(valor).strip().count(' ') < 1:
+            return "Representante legal: debe incluir nombre y al menos un apellido"
+        return None
+
+    def _validar_id_fiscal_extranjera(self, row):
+        # Persona moral extranjera: requiere número de identificación fiscal (en
+        # lugar del RFC, que no aplica). Solo si la columna está mapeada.
+        if not (self._es_moral_row(row) and self._es_extranjero(row)):
+            return None
+        if not self.col_mapping.get('numero_identificacion_fiscal'):
+            return None
+        valor = self._get_valor(row, 'numero_identificacion_fiscal')
+        if valor is None or pd.isna(valor) or str(valor).strip() == '':
+            return "Número de identificación fiscal vacío (moral extranjera)"
+        return None
+
+    def _validar_pais_asignacion_rfc(self, row):
+        # Persona moral extranjera: país que asignó el RFC/identificación fiscal.
+        if not (self._es_moral_row(row) and self._es_extranjero(row)):
+            return None
+        if not self.col_mapping.get('pais_asignacion_rfc'):
+            return None
+        valor = self._get_valor(row, 'pais_asignacion_rfc')
+        if valor is None or pd.isna(valor) or str(valor).strip() == '':
+            return "País de asignación del RFC/ID fiscal vacío (moral extranjera)"
+        if not es_pais_valido(valor):
+            return f"País de asignación '{valor}' no reconocido"
+        return None
+
     # ------------------------------------------------------------------
     # Validaciones entre filas
     # ------------------------------------------------------------------
@@ -485,6 +552,35 @@ class Validator:
                 df_dup['Tipo_Error'] = 'ID duplicado'
                 return df_dup
         return None
+
+    def _duplicados_de_columna(self, campo, tipo_error, upper=False):
+        """Filas cuyo valor en `campo` está en más de un cliente (ignorando vacíos).
+
+        La unicidad es por cliente distinto (id_cliente), no por fila: así un mismo
+        cliente repetido en varios archivos no se marca como 'varios clientes'.
+        Si no hay id_cliente, se cuenta por fila. `upper` ignora mayúsculas.
+        """
+        col = self.col_mapping.get(campo)
+        if not col or col not in self.df.columns:
+            return None
+        s = self.df[col].astype(str).str.strip()
+        clave = s.str.upper() if upper else s
+        valida = ~s.str.lower().isin(['', 'nan', 'none', 'null'])
+        col_id = self.col_mapping.get('id_cliente')
+        if col_id and col_id in self.df.columns:
+            idc = self.df[col_id].astype(str).str.strip()
+            grupos = idc[valida].groupby(clave[valida]).nunique()
+        else:
+            grupos = clave[valida].groupby(clave[valida]).size()
+        claves_malas = set(grupos[grupos > 1].index)
+        idx = self.df.index[valida & clave.isin(claves_malas)]
+        if len(idx) == 0:
+            return None
+        base = self._obtener_columnas_base()
+        cols = list(base.values()) + [col]
+        df_dup = self.df.loc[idx, cols].copy()
+        df_dup['Tipo_Error'] = tipo_error
+        return df_dup
 
     def _validar_nombres_duplicados_con_curp(self):
         col_nombre = self.col_mapping.get('nombre')
@@ -560,6 +656,25 @@ class Validator:
             if df_nombres_dup is not None:
                 errores_dataframes['Nombres Duplicados (CURP)'] = df_nombres_dup
                 errores_totales += len(df_nombres_dup)
+
+            df_firmas_dup = self._duplicados_de_columna(
+                'firma electronica avanzada', 'Firma electrónica avanzada duplicada')
+            if df_firmas_dup is not None:
+                errores_dataframes['Firmas Duplicadas'] = df_firmas_dup
+                errores_totales += len(df_firmas_dup)
+
+            # CURP y RFC únicos: un mismo CURP/RFC no puede estar en más de un cliente.
+            df_curp_dup = self._duplicados_de_columna(
+                'CURP', 'CURP asignado a más de un cliente', upper=True)
+            if df_curp_dup is not None:
+                errores_dataframes['CURPs Duplicados'] = df_curp_dup
+                errores_totales += len(df_curp_dup)
+
+            df_rfc_dup = self._duplicados_de_columna(
+                'RFC', 'RFC asignado a más de un cliente', upper=True)
+            if df_rfc_dup is not None:
+                errores_dataframes['RFCs Duplicados'] = df_rfc_dup
+                errores_totales += len(df_rfc_dup)
 
         # 4. Fechas futuras
         registros_futuros = []
@@ -711,7 +826,11 @@ class Validator:
                 ('Actividad_generica', self._validar_actividades),
                 ('Correo electronico', self._validar_correo),
                 ('Dirección', self._validar_direccion),
-                ('Nivel_cuenta', self._validar_nivel_cuenta)
+                ('Nivel_cuenta', self._validar_nivel_cuenta),
+                ('firma electronica avanzada', self._validar_firma_electronica),
+                ('representante_legal', self._validar_representante_legal),
+                ('numero_identificacion_fiscal', self._validar_id_fiscal_extranjera),
+                ('pais_asignacion_rfc', self._validar_pais_asignacion_rfc),
             ]
 
             for campo, func in validaciones:
