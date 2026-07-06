@@ -33,7 +33,10 @@ class SQLiteValidatorOperaciones:
         lim = (LimitesOperaciones(pd.DataFrame(), self.mapeo, **self.limites_kwargs)
                if self.limites_kwargs else None)
         parc_abonos: list[pd.DataFrame] = []
-        parc_efectivo: list[pd.DataFrame] = []
+        parc_efectivo_usd: list[pd.DataFrame] = []
+        parc_efectivo_mxn: list[pd.DataFrame] = []
+        # Hallazgos individuales (no se agregan): se concatenan lote a lote.
+        parc_individuales: dict[str, list[pd.DataFrame]] = {}
 
         for offset, chunk in iter_chunks(self.db_path, self.chunksize):
             if self.progreso:
@@ -44,17 +47,23 @@ class SQLiteValidatorOperaciones:
                 group_cols = gc
             if lim is not None:
                 lim.df = chunk
-                ga, ge = lim.agrupar()
+                ga, ge_usd, ge_mxn = lim.agrupar()
                 if ga is not None and not ga.empty:
                     parc_abonos.append(ga)
-                if ge is not None and not ge.empty:
-                    parc_efectivo.append(ge)
+                if ge_usd is not None and not ge_usd.empty:
+                    parc_efectivo_usd.append(ge_usd)
+                if ge_mxn is not None and not ge_mxn.empty:
+                    parc_efectivo_mxn.append(ge_mxn)
+                for nombre, df_hallazgos in lim.individuales().items():
+                    parc_individuales.setdefault(nombre, []).append(df_hallazgos)
 
-        # Límites (abonos UDIS / efectivo USD) re-agregados sobre todos los lotes.
+        # Límites (abonos UDIS / efectivo USD y MXN) re-agregados sobre todos los lotes.
         resultado_limites = {}
         if lim is not None:
-            g_ab, g_ef = reagregar(parc_abonos, parc_efectivo)
-            resultado_limites = lim.aplicar_limites(g_ab, g_ef)
+            g_ab, g_ef_usd, g_ef_mxn = reagregar(parc_abonos, parc_efectivo_usd, parc_efectivo_mxn)
+            resultado_limites = lim.aplicar_limites(g_ab, g_ef_usd, g_ef_mxn)
+            for nombre, partes in parc_individuales.items():
+                resultado_limites[nombre] = pd.concat(partes, ignore_index=True)
 
         if not parciales or not group_cols:
             if resultado_limites:

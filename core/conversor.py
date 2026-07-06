@@ -1,6 +1,8 @@
 import pandas as pd
 import re
 
+from core.utils import parsear_fecha
+
 class ConversorMoneda:
     def __init__(self, df_operaciones, col_fecha, col_monto):
         self.df = df_operaciones.copy()
@@ -22,7 +24,7 @@ class ConversorMoneda:
         self.df_udis = pd.read_excel(archivo)
         self.col_udi_fecha = mapeo['fecha']
         self.col_udi_valor = mapeo['valor']
-        self.df_udis[self.col_udi_fecha] = pd.to_datetime(self.df_udis[self.col_udi_fecha], errors='coerce', dayfirst=True)
+        self.df_udis[self.col_udi_fecha] = parsear_fecha(self.df_udis[self.col_udi_fecha])
         self.df_udis[self.col_udi_valor] = self._limpiar_serie_numerica(self.df_udis[self.col_udi_valor])
         self.df_udis = self.df_udis.dropna(subset=[self.col_udi_fecha, self.col_udi_valor])
         self.df_udis = self.df_udis.sort_values(self.col_udi_fecha)
@@ -32,7 +34,7 @@ class ConversorMoneda:
         self.df_tipo_cambio = pd.read_excel(archivo)
         self.col_tc_fecha = mapeo['fecha']
         self.col_tc_valor = mapeo['valor']
-        self.df_tipo_cambio[self.col_tc_fecha] = pd.to_datetime(self.df_tipo_cambio[self.col_tc_fecha], errors='coerce', dayfirst=True)
+        self.df_tipo_cambio[self.col_tc_fecha] = parsear_fecha(self.df_tipo_cambio[self.col_tc_fecha])
         self.df_tipo_cambio[self.col_tc_valor] = self._limpiar_serie_numerica(self.df_tipo_cambio[self.col_tc_valor])
         self.df_tipo_cambio = self.df_tipo_cambio.dropna(subset=[self.col_tc_fecha, self.col_tc_valor])
         self.df_tipo_cambio = self.df_tipo_cambio.sort_values(self.col_tc_fecha)
@@ -43,7 +45,7 @@ class ConversorMoneda:
         Usa merge asof (fecha más cercana) en lugar de apply para gran velocidad.
         """
         # Normalizar fechas en operaciones
-        self.df['_fecha_norm'] = pd.to_datetime(self.df[self.col_fecha]).dt.normalize()
+        self.df['_fecha_norm'] = parsear_fecha(self.df[self.col_fecha]).dt.normalize()
         self.df['_monto_limpio'] = self._limpiar_serie_numerica(self.df[self.col_monto])
         self.df = self.df.dropna(subset=['_monto_limpio'])
 

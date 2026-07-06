@@ -94,6 +94,25 @@ def tipo_de(valor, default: str = "fisica") -> str:
     return "moral" if "moral" in str(valor).strip().lower() else "fisica"
 
 
+def categoria_persona(valor, default: str = "fisica") -> str:
+    """Subtipo de persona para límites de operación (montos): 'fisica',
+    'fisica_ae' (física con actividad empresarial), 'moral' o 'fideicomiso'.
+
+    Se detecta por texto sobre la misma columna 'tipo de persona' (igual que
+    `tipo_de`, pero con más granularidad). `default` es el valor devuelto
+    cuando la celda viene vacía."""
+    if _vacio(valor):
+        return default
+    t = str(valor).strip().lower()
+    if "fideicomiso" in t:
+        return "fideicomiso"
+    if "moral" in t:
+        return "moral"
+    if "empresarial" in t:
+        return "fisica_ae"
+    return "fisica"
+
+
 def campos_requeridos(requisitos, nivel: str, tipo: str, modalidad: str) -> list[str]:
     """Unión de campos requeridos por las reglas que aplican a la combinación."""
     out: list[str] = []

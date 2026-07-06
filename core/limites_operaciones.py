@@ -1,24 +1,42 @@
 """Validación de LÍMITES DE OPERACIÓN por nivel de cuenta (montos).
 
-Dos validaciones, ambas mensuales (mes calendario), con los montos en MXN
-convertidos con los archivos de tasas que ya carga el diálogo de operaciones:
+Dos familias de validación, ambas configurables por (concepto, nivel, tipo de
+persona) vía `LimiteOperacion` (ver `entidades/modelo.py`), para que se puedan
+personalizar igual en el Banco y en entidades configurables por el usuario:
 
-- Abonos por nivel: suma de abonos (tipo_operacion configurable) convertida a
-  UDIS, por cuenta y mes, comparada contra el tope del nivel/tipo de persona.
-- Efectivo en USD: suma de operaciones en efectivo convertida a USD, por cliente
-  y mes, comparada contra el tope por tipo de persona (física/moral).
+- AGREGADAS (mensuales, por cuenta/cliente y mes calendario):
+  - "abono_mensual": suma de abonos (tipo_operacion configurable) en UDIS.
+  - "efectivo_usd": suma de efectivo en USD.
+  - "efectivo_mensual_mxn": suma de efectivo en MXN (sin conversión).
+- INDIVIDUALES (por operación, sin agregar):
+  - "efectivo_individual_mxn": monto en MXN de un abono/depósito/pago en
+    efectivo (sin conversión).
+  - "operacion_relevante_usd": cargo o abono en efectivo cuyo equivalente en
+    USD alcanza el umbral (>=), sin importar el sentido del movimiento.
+  - "saldo_udis": saldo de cuenta (columna aparte de 'monto') en UDIS.
+
+Los montos en MXN se convierten con los archivos de tasas que ya carga el
+diálogo de operaciones (UDIS y tipo de cambio); las validaciones en MXN puro
+no requieren ningún archivo de tasas.
 
 La fase de agrupación está separada de la de límites para poder re-agregar los
-grupos entre lotes (SQLite) y obtener totales correctos.
+grupos entre lotes (SQLite) y obtener totales correctos. Las validaciones
+INDIVIDUALES no necesitan re-agregación: cada hallazgo es autocontenido, así
+que en modo por lotes basta con concatenar los hallazgos de cada lote.
 """
 from __future__ import annotations
 
 import pandas as pd
 
-from core.niveles import normalizar_nivel, tipo_de
+from core.niveles import normalizar_nivel, tipo_de, categoria_persona
+from core.utils import parsear_fecha
 
 ABONO_UDIS = "abono_mensual"
 EFECTIVO_USD = "efectivo_usd"
+EFECTIVO_MENSUAL_MXN = "efectivo_mensual_mxn"
+EFECTIVO_INDIVIDUAL_MXN = "efectivo_individual_mxn"
+OPERACION_RELEVANTE_USD = "operacion_relevante_usd"
+SALDO_UDIS = "saldo_udis"
 
 
 def _limpiar_num(serie):
@@ -38,7 +56,7 @@ def _cargar_tasas(archivo, mapeo):
     if f not in t.columns or v not in t.columns:
         return None
     t = t[[f, v]].copy()
-    t[f] = pd.to_datetime(t[f], errors="coerce", dayfirst=True)
+    t[f] = parsear_fecha(t[f])
     t[v] = _limpiar_num(t[v])
     t = t.dropna().sort_values(f).rename(columns={f: "fecha", v: "tasa"})
     return t if not t.empty else None
@@ -61,6 +79,13 @@ def _upper(valores):
     return {str(v).strip().upper() for v in (valores or [])}
 
 
+def _fila(idx):
+    try:
+        return int(idx) + 2
+    except (TypeError, ValueError):
+        return idx
+
+
 class LimitesOperaciones:
     def __init__(self, df, mapeo, limites, *, campos, valores_abono, valores_efectivo,
                  archivo_udis=None, mapeo_udis=None, archivo_tc=None, mapeo_tc=None,
@@ -81,21 +106,23 @@ class LimitesOperaciones:
         return self.mapeo.get(logico) if logico else None
 
     # ------------------------------------------------------------------ #
-    def agrupar(self):
-        """Devuelve (g_abonos, g_efectivo): sumas mensuales por grupo (pre-límite)."""
+    def _construir_base(self):
+        """Arma el frame de trabajo por fila: fecha, monto, categorías y
+        conversiones (UDIS/USD). Devuelve None si faltan fecha/monto."""
         df = self.df
         col_fecha, col_monto = self._col("fecha"), self._col("monto")
         if not col_fecha or not col_monto or col_fecha not in df.columns or col_monto not in df.columns:
-            return None, None
+            return None
         col_cuenta, col_cliente = self._col("cuenta"), self._col("cliente")
         col_nivel, col_tipo = self._col("nivel"), self._col("tipo_persona")
         col_top, col_inst = self._col("tipo_operacion"), self._col("instrumento")
+        col_saldo = self._col("saldo")
 
-        fecha = pd.to_datetime(df[col_fecha], errors="coerce", dayfirst=True)
+        fecha = parsear_fecha(df[col_fecha])
         monto = _limpiar_num(df[col_monto])
         mask = fecha.notna() & monto.notna()
         if not mask.any():
-            return None, None
+            return None
 
         w = pd.DataFrame(index=df.index[mask])
         w["mes"] = fecha[mask].dt.to_period("M").astype(str)
@@ -107,15 +134,30 @@ class LimitesOperaciones:
                       if col_nivel and col_nivel in df.columns else None)
         w["tipo"] = (df.loc[mask, col_tipo].map(lambda v: tipo_de(v, self.default_tipo))
                      if col_tipo and col_tipo in df.columns else self.default_tipo)
+        w["categoria"] = (df.loc[mask, col_tipo].map(lambda v: categoria_persona(v, self.default_tipo))
+                          if col_tipo and col_tipo in df.columns
+                          else categoria_persona(None, self.default_tipo))
         w["top"] = (df.loc[mask, col_top].astype(str).str.strip().str.upper()
                     if col_top and col_top in df.columns else "")
         w["inst"] = (df.loc[mask, col_inst].astype(str).str.strip().str.upper()
                      if col_inst and col_inst in df.columns else "")
+        if col_saldo and col_saldo in df.columns:
+            w["saldo"] = _limpiar_num(df.loc[mask, col_saldo])
 
         if self.tasas_udis is not None:
             w["udis"] = _convertir(w["fnorm"], w["monto"], self.tasas_udis)
+            if "saldo" in w:
+                w["saldo_udis"] = _convertir(w["fnorm"], w["saldo"], self.tasas_udis)
         if self.tasas_tc is not None:
             w["usd"] = _convertir(w["fnorm"], w["monto"], self.tasas_tc)
+        return w
+
+    def agrupar(self):
+        """Devuelve (g_abonos, g_efectivo_usd, g_efectivo_mxn): sumas
+        mensuales por grupo (pre-límite)."""
+        w = self._construir_base()
+        if w is None:
+            return None, None, None
 
         g_abonos = None
         if "udis" in w and self.valores_abono:
@@ -124,13 +166,76 @@ class LimitesOperaciones:
                 g_abonos = (ab.groupby(["cuenta", "mes", "nivel", "tipo"], dropna=False)["udis"]
                             .agg(total="sum", n="count").reset_index())
 
-        g_efectivo = None
+        ef_cash = w[w["inst"].isin(_upper(self.valores_efectivo))] if self.valores_efectivo else w.iloc[0:0]
+
+        g_efectivo_usd = None
         if "usd" in w and self.valores_efectivo:
-            ef = w[w["inst"].isin(_upper(self.valores_efectivo)) & w["usd"].notna()]
+            ef = ef_cash[ef_cash["usd"].notna()]
             if not ef.empty:
-                g_efectivo = (ef.groupby(["cliente", "mes", "tipo"], dropna=False)["usd"]
+                g_efectivo_usd = (ef.groupby(["cliente", "mes", "tipo"], dropna=False)["usd"]
+                                  .agg(total="sum", n="count").reset_index())
+
+        g_efectivo_mxn = None
+        if self.valores_efectivo and not ef_cash.empty:
+            g_efectivo_mxn = (ef_cash.groupby(["cliente", "mes", "categoria"], dropna=False)["monto"]
                               .agg(total="sum", n="count").reset_index())
-        return g_abonos, g_efectivo
+        return g_abonos, g_efectivo_usd, g_efectivo_mxn
+
+    def individuales(self) -> dict:
+        """Hallazgos por operación individual (sin agregar): topes de efectivo
+        en MXN por transacción, operaciones relevantes (USD) y saldo (UDIS)."""
+        w = self._construir_base()
+        if w is None:
+            return {}
+        sheets = {}
+
+        if self.valores_efectivo and self.valores_abono:
+            ab_cash = w[w["inst"].isin(_upper(self.valores_efectivo)) &
+                       w["top"].isin(_upper(self.valores_abono))]
+            filas = []
+            for idx, r in ab_cash.iterrows():
+                lim = self._limite(EFECTIVO_INDIVIDUAL_MXN, "todos", r["categoria"])
+                if lim is not None and r["monto"] > lim:
+                    filas.append({
+                        "fila": _fila(idx), "id_cliente": r["cliente"], "id_cuenta": r["cuenta"],
+                        "fecha": r["fnorm"].date().isoformat(), "categoria": r["categoria"],
+                        "monto_MXN": round(float(r["monto"]), 2), "limite_MXN": lim,
+                        "Tipo_Error": (f"Movimiento individual en efectivo {r['monto']:.2f} MXN "
+                                       f"excede el límite {lim} MXN ({r['categoria']})")})
+            if filas:
+                sheets["Efectivo Individual sobre Limite (MXN)"] = pd.DataFrame(filas)
+
+        if "usd" in w and self.valores_efectivo:
+            cash = w[w["inst"].isin(_upper(self.valores_efectivo)) & w["usd"].notna()]
+            filas = []
+            for idx, r in cash.iterrows():
+                lim = self._limite(OPERACION_RELEVANTE_USD, "todos", r["categoria"])
+                if lim is not None and r["usd"] >= lim:
+                    filas.append({
+                        "fila": _fila(idx), "id_cliente": r["cliente"], "id_cuenta": r["cuenta"],
+                        "fecha": r["fnorm"].date().isoformat(), "categoria": r["categoria"],
+                        "monto_USD": round(float(r["usd"]), 2), "umbral_USD": lim,
+                        "Tipo_Error": (f"Operación relevante: {r['usd']:.2f} USD "
+                                       f"(>= {lim} USD) en efectivo")})
+            if filas:
+                sheets["Operaciones Relevantes"] = pd.DataFrame(filas)
+
+        if "saldo_udis" in w:
+            sal = w[w["saldo_udis"].notna()]
+            filas = []
+            for idx, r in sal.iterrows():
+                lim = self._limite(SALDO_UDIS, r["nivel"], r["categoria"])
+                if lim is not None and r["saldo_udis"] > lim:
+                    filas.append({
+                        "fila": _fila(idx), "id_cliente": r["cliente"], "id_cuenta": r["cuenta"],
+                        "fecha": r["fnorm"].date().isoformat(), "nivel": r["nivel"],
+                        "saldo_UDIS": round(float(r["saldo_udis"]), 2), "limite_UDIS": lim,
+                        "Tipo_Error": (f"Saldo {r['saldo_udis']:.2f} UDIS excede el límite "
+                                       f"{lim} UDIS (nivel {r['nivel']})")})
+            if filas:
+                sheets["Saldo sobre Limite (UDIS)"] = pd.DataFrame(filas)
+
+        return sheets
 
     # ------------------------------------------------------------------ #
     def _limite(self, concepto, nivel, tipo):
@@ -144,7 +249,7 @@ class LimitesOperaciones:
             return l.limite          # puede ser 0 (prohibido) o None (sin límite)
         return None
 
-    def aplicar_limites(self, g_abonos, g_efectivo) -> dict:
+    def aplicar_limites(self, g_abonos, g_efectivo_usd, g_efectivo_mxn) -> dict:
         sheets = {}
         if g_abonos is not None and not g_abonos.empty:
             filas = []
@@ -160,9 +265,9 @@ class LimitesOperaciones:
             if filas:
                 sheets["Abonos sobre Limite (UDIS)"] = pd.DataFrame(filas)
 
-        if g_efectivo is not None and not g_efectivo.empty:
+        if g_efectivo_usd is not None and not g_efectivo_usd.empty:
             filas = []
-            for _, r in g_efectivo.iterrows():
+            for _, r in g_efectivo_usd.iterrows():
                 lim = self._limite(EFECTIVO_USD, "todos", r["tipo"])
                 if lim is not None and r["total"] > lim:
                     filas.append({
@@ -173,23 +278,45 @@ class LimitesOperaciones:
                                        f"{lim} ({r['tipo']})")})
             if filas:
                 sheets["Efectivo USD sobre Limite"] = pd.DataFrame(filas)
+
+        if g_efectivo_mxn is not None and not g_efectivo_mxn.empty:
+            filas = []
+            for _, r in g_efectivo_mxn.iterrows():
+                lim = self._limite(EFECTIVO_MENSUAL_MXN, "todos", r["categoria"])
+                if lim is not None and r["total"] > lim:
+                    filas.append({
+                        "id_cliente": r["cliente"], "mes": r["mes"], "categoria": r["categoria"],
+                        "operaciones": int(r["n"]),
+                        "efectivo_MXN": round(float(r["total"]), 2), "limite_MXN": lim,
+                        "Tipo_Error": (f"Efectivo {r['total']:.2f} MXN excede el límite mensual "
+                                       f"{lim} MXN ({r['categoria']})")})
+            if filas:
+                sheets["Efectivo MXN mensual sobre Limite"] = pd.DataFrame(filas)
         return sheets
 
     def validar(self) -> dict:
-        ga, ge = self.agrupar()
-        return self.aplicar_limites(ga, ge)
+        ga, ge_usd, ge_mxn = self.agrupar()
+        sheets = self.aplicar_limites(ga, ge_usd, ge_mxn)
+        sheets.update(self.individuales())
+        return sheets
 
 
-def reagregar(parciales_abonos, parciales_efectivo):
-    """Re-agrega los grupos parciales de varios lotes (SQLite) -> (g_abonos, g_efectivo)."""
+def reagregar(parciales_abonos, parciales_efectivo_usd, parciales_efectivo_mxn):
+    """Re-agrega los grupos parciales de varios lotes (SQLite) -> (g_abonos,
+    g_efectivo_usd, g_efectivo_mxn)."""
     g_ab = None
     if parciales_abonos:
         t = pd.concat(parciales_abonos, ignore_index=True)
         g_ab = (t.groupby(["cuenta", "mes", "nivel", "tipo"], dropna=False)
                 .agg(total=("total", "sum"), n=("n", "sum")).reset_index())
-    g_ef = None
-    if parciales_efectivo:
-        t = pd.concat(parciales_efectivo, ignore_index=True)
-        g_ef = (t.groupby(["cliente", "mes", "tipo"], dropna=False)
-                .agg(total=("total", "sum"), n=("n", "sum")).reset_index())
-    return g_ab, g_ef
+    g_ef_usd = None
+    if parciales_efectivo_usd:
+        t = pd.concat(parciales_efectivo_usd, ignore_index=True)
+        g_ef_usd = (t.groupby(["cliente", "mes", "tipo"], dropna=False)
+                    .agg(total=("total", "sum"), n=("n", "sum")).reset_index())
+    g_ef_mxn = None
+    if parciales_efectivo_mxn:
+        t = pd.concat(parciales_efectivo_mxn, ignore_index=True)
+        g_ef_mxn = (t.groupby(["cliente", "mes", "categoria"], dropna=False)
+                    .agg(total=("total", "sum"), n=("n", "sum")).reset_index())
+    return g_ab, g_ef_usd, g_ef_mxn

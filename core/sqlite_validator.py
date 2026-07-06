@@ -26,7 +26,7 @@ class SQLiteValidator:
     def __init__(self, db_path, mapeo, tipo_persona_default=None,
                  chunksize=CHUNK_SIZE, progreso=None,
                  requisitos=None, campo_nivel="", campo_tipo_persona="",
-                 campo_modalidad="", default_tipo="fisica"):
+                 campo_modalidad="", default_tipo="fisica", validator_config=None):
         self.db_path = db_path
         self.mapeo = mapeo
         self.tipo_persona_default = tipo_persona_default
@@ -38,6 +38,9 @@ class SQLiteValidator:
         self.campo_tipo_persona = campo_tipo_persona
         self.campo_modalidad = campo_modalidad
         self.default_tipo = default_tipo
+        # Parámetros/toggles de Validator (ver core/validator.py DEFAULT_CONFIG).
+        self.validator_config = validator_config or {}
+        self.checks_deshabilitados = set(self.validator_config.get("checks_deshabilitados") or [])
 
     # ------------------------------------------------------------------ #
     def validar_todo(self):
@@ -48,8 +51,8 @@ class SQLiteValidator:
         for offset, chunk in iter_chunks(self.db_path, self.chunksize):
             if self.progreso:
                 self.progreso(f"Validando clientes (desde fila {offset:,})...")
-            errores, _ = Validator(chunk, self.mapeo,
-                                   self.tipo_persona_default).validar_todo(
+            errores, _ = Validator(chunk, self.mapeo, self.tipo_persona_default,
+                                   config=self.validator_config).validar_todo(
                                        incluir_duplicados=False)
             for cat, df in errores.items():
                 if df is not None and not df.empty:
@@ -93,10 +96,11 @@ class SQLiteValidator:
         base_cols = list(dict.fromkeys(base.values()))  # sin repetidos, ordenado
 
         salida = {}
+        deshabilitados = self.checks_deshabilitados
         conn = sqlite3.connect(self.db_path)
         try:
             # IDs duplicados
-            if col_id:
+            if col_id and "ids_duplicados" not in deshabilitados:
                 cols = ", ".join(_q(c) for c in base_cols) or _q(col_id)
                 q = (f"SELECT {cols} FROM {TABLA} WHERE {_q(col_id)} IN "
                      f"(SELECT {_q(col_id)} FROM {TABLA} "
@@ -107,7 +111,7 @@ class SQLiteValidator:
                     salida['IDs Duplicados'] = df
 
             # Mismo CURP con nombre diferente
-            if col_nombre and col_curp:
+            if col_nombre and col_curp and "nombres_duplicados_curp" not in deshabilitados:
                 cols = ", ".join(_q(c) for c in dict.fromkeys(base_cols + [col_nombre, col_curp]))
                 sub = (f"SELECT UPPER(TRIM({_q(col_curp)})) AS k FROM {TABLA} "
                        f"WHERE TRIM({_q(col_curp)}) <> '' "
@@ -122,14 +126,14 @@ class SQLiteValidator:
                     salida['Nombres Duplicados (CURP)'] = df
 
             # Firma electrónica avanzada duplicada (única por cliente)
-            if col_firma:
+            if col_firma and "firmas_duplicadas" not in deshabilitados:
                 df = self._duplicados_col_sql(conn, base_cols, col_firma, col_id=col_id)
                 if not df.empty:
                     df['Tipo_Error'] = 'Firma electrónica avanzada duplicada'
                     salida['Firmas Duplicadas'] = df
 
             # CURP asignado a más de un cliente (único)
-            if col_curp:
+            if col_curp and "curp_duplicado" not in deshabilitados:
                 df = self._duplicados_col_sql(conn, base_cols, col_curp, col_id=col_id, upper=True)
                 if not df.empty:
                     df['Tipo_Error'] = 'CURP asignado a más de un cliente'
@@ -137,7 +141,7 @@ class SQLiteValidator:
 
             # RFC asignado a más de un cliente (único)
             col_rfc = col_map.get('RFC')
-            if col_rfc:
+            if col_rfc and "rfc_duplicado" not in deshabilitados:
                 df = self._duplicados_col_sql(conn, base_cols, col_rfc, col_id=col_id, upper=True)
                 if not df.empty:
                     df['Tipo_Error'] = 'RFC asignado a más de un cliente'

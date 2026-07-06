@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 from core.conversor import ConversorMoneda
+from core.utils import parsear_fecha
 
 class ValidatorOperaciones:
     def __init__(self, df, mapeo, config, update_callback=None):
@@ -60,8 +61,8 @@ class ValidatorOperaciones:
         if self.update_callback:
             self.update_callback("Convirtiendo fechas...")
 
-        # 2. Convertir fechas (formato día/mes/año)
-        self.df[col_fecha] = pd.to_datetime(self.df[col_fecha], errors='coerce', dayfirst=True)
+        # 2. Convertir fechas (formato día/mes/año; ISO se detecta sin ambigüedad)
+        self.df[col_fecha] = parsear_fecha(self.df[col_fecha])
         self.df = self.df.dropna(subset=[col_fecha])
         self.df['mes'] = self.df[col_fecha].dt.to_period('M')
 

@@ -33,6 +33,12 @@ from ui.dialogo_operaciones import ConfigOperacionesDialog
 
 NO_MAPEAR = "(no mapear)"
 
+UNIDAD_LIMITE = {
+    "abono_mensual": "UDIS", "efectivo_usd": "USD", "efectivo_mensual_mxn": "MXN",
+    "efectivo_individual_mxn": "MXN", "operacion_relevante_usd": "USD",
+    "saldo_udis": "UDIS",
+}
+
 
 class App:
     def __init__(self, page: ft.Page):
@@ -54,6 +60,10 @@ class App:
         self.map_cli_dd: dict[str, ft.Dropdown] = {}
         self.map_ops_dd: dict[str, ft.Dropdown] = {}
         self.hallazgos: dict[str, pd.DataFrame] = {}
+        # Nombre original de la entidad configurable que se está editando (None
+        # si el constructor está creando una nueva). Permite borrar el JSON
+        # viejo si se guarda con un nombre distinto (renombrar).
+        self._editando_nombre_original: str | None = None
 
         # File pickers (Flet 0.85: son servicios y pick_files/save_file son
         # corutinas que devuelven el resultado; no hay on_result).
@@ -81,6 +91,9 @@ class App:
 
         self.btn_eliminar = ft.IconButton(ft.Icons.DELETE_OUTLINE, tooltip="Eliminar entidad",
                                           on_click=lambda e: self._eliminar_entidad(), visible=False)
+        self.btn_editar = ft.IconButton(ft.Icons.EDIT_OUTLINED, tooltip="Editar entidad",
+                                        on_click=lambda e: self._editar_entidad_actual(),
+                                        visible=False)
 
         # Inicializar paneles de mapeo ANTES de refrescar entidades.
         # scroll=AUTO: muestra barra deslizadora cuando hay mas campos de los
@@ -94,6 +107,7 @@ class App:
             ft.Text("Validacion de BBDD", size=22, weight=ft.FontWeight.BOLD),
             ft.Container(expand=True),
             self.dd_entidad,
+            self.btn_editar,
             self.btn_eliminar,
             ft.FilledButton("Nueva entidad", icon=ft.Icons.ADD,
                             on_click=lambda e: self._abrir_constructor()),
@@ -181,9 +195,18 @@ class App:
             return
         self.entidad = cargar_entidad(nombre)
         self.btn_eliminar.visible = not getattr(self.entidad, "es_builtin", False)
+        self.btn_editar.visible = True
         self._rehacer_mapeo("cli")
         self._rehacer_mapeo("ops")
         self.page.update()
+
+    def _editar_entidad_actual(self):
+        if not self.entidad:
+            return
+        if getattr(self.entidad, "es_builtin", False):
+            self._abrir_editor_banco()
+        else:
+            self._abrir_constructor(existing=self.entidad.config)
 
     def _eliminar_entidad(self):
         nombre = self.dd_entidad.value
@@ -526,40 +549,64 @@ class App:
     # ================================================================== #
     # Constructor de entidades nuevas
     # ================================================================== #
-    def _abrir_constructor(self):
-        self.nuevo_nombre = ft.TextField(label="Nombre de la entidad", width=320)
-        self.nuevo_desc = ft.TextField(label="Descripcion", width=320)
-        self.campos_cli: list[CampoConfig] = []
-        self.campos_ops: list[CampoConfig] = []
-        self.requisitos_cli: list[RequisitoNivel] = []
-        self.limites_op: list[LimiteOperacion] = []
-        self.lista_cli = ft.Column(spacing=2)
-        self.lista_ops = ft.Column(spacing=2)
-        self.lista_niveles = ft.Column(spacing=2)
-        self.lista_limites = ft.Column(spacing=2)
+    def _abrir_constructor(self, existing: EntidadConfig | None = None):
+        self.nuevo_nombre = ft.TextField(label="Nombre de la entidad", width=320,
+                                         value=existing.nombre if existing else "")
+        self.nuevo_desc = ft.TextField(label="Descripcion", width=320,
+                                       value=existing.descripcion if existing else "")
+        self.campos_cli: list[CampoConfig] = list(existing.campos_cliente) if existing else []
+        self.campos_ops: list[CampoConfig] = list(existing.campos_operacion) if existing else []
+        self.requisitos_cli: list[RequisitoNivel] = (
+            list(existing.requisitos_cliente) if existing else [])
+        self.limites_op: list[LimiteOperacion] = (
+            list(existing.limites_operacion) if existing else [])
+        self.lista_cli = ft.Column(spacing=2,
+            controls=[ft.Text(f"• {c.logico} ({len(c.reglas)} reglas)") for c in self.campos_cli])
+        self.lista_ops = ft.Column(spacing=2,
+            controls=[ft.Text(f"• {c.logico} ({len(c.reglas)} reglas)") for c in self.campos_ops])
+        self.lista_niveles = ft.Column(spacing=2, controls=[
+            ft.Text(f"• Nivel {r.nivel} / {r.tipo_persona} / {r.modalidad}: "
+                    f"{', '.join(r.campos)}", size=12) for r in self.requisitos_cli])
+        self.lista_limites = ft.Column(spacing=2, controls=[
+            ft.Text(f"• {l.concepto} / nivel {l.nivel} / {l.tipo_persona}: "
+                    f"{'sin límite' if l.limite is None else f'{l.limite:g} ' + UNIDAD_LIMITE.get(l.concepto, '')}".strip(),
+                    size=12) for l in self.limites_op])
 
         # Designación de qué campo lógico (de clientes) lleva el nivel/tipo/modalidad.
         self.dd_campo_nivel = ft.Dropdown(label="Campo de NIVEL (1-4)", width=200, dense=True)
         self.dd_campo_tipo = ft.Dropdown(label="Campo TIPO persona (opc.)", width=200, dense=True)
         self.dd_campo_modalidad = ft.Dropdown(label="Campo MODALIDAD (opc.)", width=200, dense=True)
         self._refrescar_opciones_nivel()
+        if existing:
+            self.dd_campo_nivel.value = existing.campo_nivel or NO_MAPEAR
+            self.dd_campo_tipo.value = existing.campo_tipo_persona or NO_MAPEAR
+            self.dd_campo_modalidad.value = existing.campo_modalidad or NO_MAPEAR
 
         # Designación de campos de OPERACIÓN para límites de monto.
         self.op_roles = [("fecha", "Fecha"), ("monto", "Monto"), ("cuenta", "Cuenta"),
                          ("cliente", "Cliente"), ("nivel", "Nivel"),
                          ("tipo_persona", "Tipo persona"), ("tipo_operacion", "Tipo operación"),
-                         ("instrumento", "Instrumento")]
+                         ("instrumento", "Instrumento"), ("saldo", "Saldo")]
         self.op_dd = {rol: ft.Dropdown(label=etq, width=150, dense=True)
                       for rol, etq in self.op_roles}
         self.tf_abono = ft.TextField(label="Valores de ABONO (coma)", width=300, dense=True,
-                                     value="IN, ABONO, DEPOSITO")
+                                     value=(", ".join(existing.op_valores_abono) if existing
+                                            else "IN, ABONO, DEPOSITO"))
         self.tf_efectivo = ft.TextField(label="Valores de EFECTIVO (coma)", width=300, dense=True,
-                                        value="EFECTIVO")
+                                        value=(", ".join(existing.op_valores_efectivo) if existing
+                                               else "EFECTIVO"))
         # Sinónimos de nivel: para mapear valores que no dicen "1/2/3/4".
         self.tf_aliases_nivel = ft.TextField(
             label="Sinónimos de nivel (alias=nivel, coma)", width=420, dense=True,
-            hint_text="Ej: Tradicional=4, Básica=2, Limitada=3L, Limitada 4=4L")
+            hint_text="Ej: Tradicional=4, Básica=2, Limitada=3L, Limitada 4=4L",
+            value=(", ".join(f"{a}={n}" for a, n in existing.aliases_nivel.items())
+                   if existing else ""))
         self._refrescar_opciones_op()
+        if existing:
+            for rol, dd in self.op_dd.items():
+                dd.value = existing.op_campos.get(rol) or NO_MAPEAR
+
+        self._editando_nombre_original = existing.nombre if existing else None
 
         cuerpo = ft.Container(width=640, content=ft.Column([
             self.nuevo_nombre, self.nuevo_desc, ft.Divider(),
@@ -587,8 +634,10 @@ class App:
             ft.Divider(),
             ft.Text("Límites de OPERACIÓN por nivel (montos)", weight=ft.FontWeight.BOLD),
             ft.Text("Designa los campos de operación y los valores de abono/efectivo; "
-                    "luego agrega los topes por nivel. Abonos se evalúan en UDIS y el "
-                    "efectivo en USD (requiere cargar ambos archivos de tasas al validar).",
+                    "luego agrega los topes por nivel. Abonos se evalúan en UDIS, efectivo "
+                    "en USD y en MXN, saldo en UDIS (requiere cargar ambos archivos de "
+                    "tasas al validar). 'Tipo persona' admite también 'fisica_ae' (física "
+                    "con actividad empresarial) y 'fideicomiso'.",
                     size=11, color=ft.Colors.GREY_700),
             ft.Row(list(self.op_dd.values()), wrap=True),
             ft.Row([self.tf_abono, self.tf_efectivo], wrap=True),
@@ -598,7 +647,8 @@ class App:
         ], scroll=ft.ScrollMode.AUTO, height=460))
 
         self.dlg_constructor = ft.AlertDialog(
-            modal=True, title=ft.Text("Nueva entidad"), content=cuerpo,
+            modal=True, title=ft.Text("Editar entidad" if existing else "Nueva entidad"),
+            content=cuerpo,
             actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(self.dlg_constructor)),
                      ft.FilledButton("Guardar", on_click=lambda e: self._guardar_entidad())])
         self._abrir(self.dlg_constructor)
@@ -709,13 +759,17 @@ class App:
                 dd.value = NO_MAPEAR
 
     def _editar_limite_op(self):
-        dd_concepto = ft.Dropdown(label="Concepto", width=200, value="abono_mensual",
-                                  options=[ft.dropdown.Option("abono_mensual"),
-                                           ft.dropdown.Option("efectivo_usd")])
+        dd_concepto = ft.Dropdown(label="Concepto", width=220, value="abono_mensual",
+                                  options=[ft.dropdown.Option(c) for c in [
+                                      "abono_mensual", "efectivo_usd", "efectivo_mensual_mxn",
+                                      "efectivo_individual_mxn", "operacion_relevante_usd",
+                                      "saldo_udis"]])
         dd_nivel = ft.Dropdown(label="Nivel", width=120, value="todos",
-                               options=[ft.dropdown.Option(n) for n in ["todos", "1", "2", "3", "3L", "4"]])
-        dd_tipo = ft.Dropdown(label="Tipo persona", width=150, value="ambos",
-                              options=[ft.dropdown.Option(t) for t in ["ambos", "fisica", "moral"]])
+                               options=[ft.dropdown.Option(n) for n in
+                                        ["todos", "1", "2", "3", "3L", "4", "4L"]])
+        dd_tipo = ft.Dropdown(label="Tipo persona", width=170, value="ambos",
+                              options=[ft.dropdown.Option(t) for t in
+                                       ["ambos", "fisica", "fisica_ae", "moral", "fideicomiso"]])
         tf_limite = ft.TextField(label="Límite (vacío = sin límite)", width=200)
 
         def aceptar(e):
@@ -730,8 +784,8 @@ class App:
             lim = LimiteOperacion(concepto=dd_concepto.value, nivel=dd_nivel.value,
                                   tipo_persona=dd_tipo.value, limite=limite)
             self.limites_op.append(lim)
-            unidad = "UDIS" if lim.concepto == "abono_mensual" else "USD"
-            txt_lim = "sin límite" if limite is None else f"{limite:g} {unidad}"
+            unidad = UNIDAD_LIMITE.get(lim.concepto, "")
+            txt_lim = "sin límite" if limite is None else f"{limite:g} {unidad}".strip()
             self.lista_limites.controls.append(
                 ft.Text(f"• {lim.concepto} / nivel {lim.nivel} / {lim.tipo_persona}: {txt_lim}",
                         size=12))
@@ -743,7 +797,13 @@ class App:
             content=ft.Container(width=520, content=ft.Column(
                 [ft.Row([dd_concepto, dd_nivel, dd_tipo], wrap=True), tf_limite,
                  ft.Text("abono_mensual: tope de abonos del mes en UDIS.\n"
-                         "efectivo_usd: tope de efectivo del mes en USD (0 = prohibido).",
+                         "efectivo_usd: tope de efectivo del mes en USD (0 = prohibido).\n"
+                         "efectivo_mensual_mxn: tope de efectivo del mes en MXN (sin conversión).\n"
+                         "efectivo_individual_mxn: tope por movimiento de abono/depósito en "
+                         "efectivo, en MXN (sin conversión).\n"
+                         "operacion_relevante_usd: marca cargos o abonos en efectivo cuyo "
+                         "equivalente en USD sea >= al valor indicado.\n"
+                         "saldo_udis: tope de saldo de cuenta en UDIS.",
                          size=11, color=ft.Colors.GREY_700)], tight=True)),
             actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(dlg)),
                      ft.FilledButton("Agregar", on_click=aceptar)])
@@ -812,12 +872,136 @@ class App:
         except ValueError as ex:
             self._toast(str(ex))
             return
+        # Si se editaba una entidad existente y se cambió el nombre, borra el
+        # JSON viejo (equivale a renombrar).
+        nombre_original = self._editando_nombre_original
+        if nombre_original and nombre_original != nombre:
+            eliminar_entidad(nombre_original)
+        editando = nombre_original is not None
+        self._editando_nombre_original = None
         self._cerrar(self.dlg_constructor)
         self.dd_entidad.value = nombre
         self._refrescar_entidades()
         self._seleccionar_entidad(nombre)
-        self._toast(f"Entidad '{nombre}' creada.")
+        self._toast(f"Entidad '{nombre}' {'actualizada' if editando else 'creada'}.")
         self.page.update()
+
+    # ================================================================== #
+    # Editor de validaciones/limites de Banco (builtin)
+    # ================================================================== #
+    def _abrir_editor_banco(self):
+        from entidades.banco import CAMPOS_CLIENTE, config_efectiva
+        from entidades import registro
+        from core.validator import DEFAULT_CONFIG as VCFG_DEFAULT, CHECKS_CAMPO, CHECKS_GENERALES
+
+        cfg = config_efectiva()
+        # Campos "falsos" (sin reglas) solo para que _editar_requisito_nivel
+        # pueda listar los campos de cliente de Banco como checkboxes.
+        self.campos_cli = [CampoConfig(logico=c) for c in CAMPOS_CLIENTE]
+        self.requisitos_cli: list[RequisitoNivel] = list(cfg["requisitos_cliente"])
+        self.limites_op: list[LimiteOperacion] = list(cfg["limites_operacion"])
+        self.lista_niveles = ft.Column(spacing=2, controls=[
+            ft.Text(f"• Nivel {r.nivel} / {r.tipo_persona} / {r.modalidad}: "
+                    f"{', '.join(r.campos)}", size=12) for r in self.requisitos_cli])
+        self.lista_limites = ft.Column(spacing=2, controls=[
+            ft.Text(f"• {l.concepto} / nivel {l.nivel} / {l.tipo_persona}: "
+                    f"{'sin límite' if l.limite is None else f'{l.limite:g} ' + UNIDAD_LIMITE.get(l.concepto, '')}".strip(),
+                    size=12) for l in self.limites_op])
+
+        self.tf_abono = ft.TextField(label="Valores de ABONO (coma)", width=300, dense=True,
+                                     value=", ".join(cfg["valores_abono"]))
+        self.tf_efectivo = ft.TextField(label="Valores de EFECTIVO (coma)", width=300, dense=True,
+                                        value=", ".join(cfg["valores_efectivo"]))
+
+        vcfg = cfg["validator_config"]
+        deshabilitados = set(vcfg.get("checks_deshabilitados") or [])
+
+        etiquetas_param = {
+            "telefono_min_digitos": "Tel: minimo de digitos",
+            "telefono_max_repetidos": "Tel: max. repetidos consecutivos",
+            "direccion_min_separadores": "Direccion: minimo de separadores",
+            "edad_minima": "Edad minima (fisica)",
+            "edad_maxima": "Edad maxima (fisica)",
+            "edad_irrealista_max": "Edad irrealista (mayor a)",
+            "year_corte_siglo": "Corte de siglo (anios de 2 digitos)",
+        }
+        param_fields: dict[str, ft.TextField] = {}
+        param_rows = []
+        for clave, default in VCFG_DEFAULT.items():
+            if clave == "checks_deshabilitados":
+                continue
+            tf = ft.TextField(label=etiquetas_param[clave], width=210, dense=True,
+                              value=str(vcfg.get(clave, default)))
+            param_fields[clave] = tf
+            param_rows.append(tf)
+
+        # Checkbox marcado = validación ACTIVA (se desmarca para desactivarla).
+        checks_campo_boxes = {clave: ft.Checkbox(label=etq, value=(clave not in deshabilitados))
+                              for clave, etq in CHECKS_CAMPO.items()}
+        checks_generales_boxes = {clave: ft.Checkbox(label=etq, value=(clave not in deshabilitados))
+                                  for clave, etq in CHECKS_GENERALES.items()}
+
+        def _csv(s):
+            return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+        def aceptar(e):
+            nuevo_vcfg = {}
+            for clave, tf in param_fields.items():
+                try:
+                    nuevo_vcfg[clave] = int((tf.value or "").strip())
+                except ValueError:
+                    nuevo_vcfg[clave] = VCFG_DEFAULT[clave]
+            nuevo_vcfg["checks_deshabilitados"] = (
+                [c for c, chk in checks_campo_boxes.items() if not chk.value]
+                + [c for c, chk in checks_generales_boxes.items() if not chk.value])
+            data = {
+                "requisitos_cliente": [r.to_dict() for r in self.requisitos_cli],
+                "limites_operacion": [l.to_dict() for l in self.limites_op],
+                "valores_abono": _csv(self.tf_abono.value),
+                "valores_efectivo": _csv(self.tf_efectivo.value),
+                "validator_config": nuevo_vcfg,
+            }
+            registro.guardar_config_banco(data)
+            self._cerrar(dlg)
+            self._seleccionar_entidad(self.dd_entidad.value)
+            self._toast("Validaciones de Banco actualizadas.")
+            self.page.update()
+
+        def restaurar(e):
+            registro.restaurar_config_banco()
+            self._cerrar(dlg)
+            self._seleccionar_entidad(self.dd_entidad.value)
+            self._toast("Banco restaurado a sus valores originales.")
+            self.page.update()
+
+        cuerpo = ft.Container(width=640, content=ft.Column([
+            ft.Text("Requisitos por NIVEL DE CUENTA (clientes)", weight=ft.FontWeight.BOLD),
+            self.lista_niveles,
+            ft.TextButton("Agregar requisito de nivel", icon=ft.Icons.ADD,
+                          on_click=lambda e: self._editar_requisito_nivel()),
+            ft.Divider(),
+            ft.Text("Limites de OPERACION por nivel (montos)", weight=ft.FontWeight.BOLD),
+            ft.Row([self.tf_abono, self.tf_efectivo], wrap=True),
+            self.lista_limites,
+            ft.TextButton("Agregar limite de operacion", icon=ft.Icons.ADD,
+                          on_click=lambda e: self._editar_limite_op()),
+            ft.Divider(),
+            ft.Text("Parametros de validacion de clientes", weight=ft.FontWeight.BOLD),
+            ft.Row(param_rows, wrap=True),
+            ft.Text("Validaciones activas (desmarca para desactivar una validacion):",
+                    size=11, color=ft.Colors.GREY_700),
+            ft.Text("Por campo:", size=12, weight=ft.FontWeight.BOLD),
+            ft.Column(list(checks_campo_boxes.values()), spacing=0),
+            ft.Text("Generales:", size=12, weight=ft.FontWeight.BOLD),
+            ft.Column(list(checks_generales_boxes.values()), spacing=0),
+        ], scroll=ft.ScrollMode.AUTO, height=460))
+
+        dlg = ft.AlertDialog(
+            modal=True, title=ft.Text("Editar validaciones de Banco"), content=cuerpo,
+            actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(dlg)),
+                     ft.TextButton("Restaurar valores originales", on_click=restaurar),
+                     ft.FilledButton("Guardar", on_click=aceptar)])
+        self._abrir(dlg)
 
     # ================================================================== #
     # Helpers de dialogo / toast

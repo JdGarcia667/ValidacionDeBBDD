@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from core.utils import normalizar_texto, ESTADOS_MEXICANOS_NORM
+from core.utils import normalizar_texto, ESTADOS_MEXICANOS_NORM, parsear_fecha
 from core.paises import es_pais_valido
 
 
@@ -48,7 +48,7 @@ def parse_fecha(valor):
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return pd.to_datetime(valor, errors="coerce", dayfirst=True)
+        return parsear_fecha(valor)
 
 
 def _norm(texto: str) -> str:

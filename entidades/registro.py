@@ -14,6 +14,10 @@ from .configurable import EntidadConfigurable
 from .modelo import EntidadConfig
 
 DIR_USUARIO = os.path.join(os.path.dirname(__file__), "usuario")
+# Archivo especial de overrides de Banco (no es una entidad seleccionable: no
+# lleva clave "nombre" y su archivo empieza con "_", excluido explícitamente
+# en listar_entidades()).
+ARCHIVO_CONFIG_BANCO = os.path.join(DIR_USUARIO, "_banco_config.json")
 
 _BUILTINS: dict[str, type] = {"Banco": BancoValidador}
 
@@ -30,6 +34,8 @@ def listar_entidades() -> list[str]:
     nombres = list(_BUILTINS.keys())
     _asegurar_dir()
     for f in sorted(os.listdir(DIR_USUARIO)):
+        if f.startswith("_"):
+            continue
         if f.endswith(".json"):
             try:
                 with open(os.path.join(DIR_USUARIO, f), encoding="utf-8") as fh:
@@ -76,3 +82,30 @@ def eliminar_entidad(nombre: str) -> bool:
         os.remove(ruta)
         return True
     return False
+
+
+# --------------------------------------------------------------------------- #
+# Overrides de Banco: requisitos por nivel, límites de operación y parámetros
+# de Validator, editables desde la UI sin tocar entidades/banco.py.
+# --------------------------------------------------------------------------- #
+def cargar_config_banco() -> dict | None:
+    """None si no hay overrides guardados (se usa el comportamiento de fábrica)."""
+    if not os.path.exists(ARCHIVO_CONFIG_BANCO):
+        return None
+    try:
+        with open(ARCHIVO_CONFIG_BANCO, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def guardar_config_banco(data: dict) -> None:
+    _asegurar_dir()
+    with open(ARCHIVO_CONFIG_BANCO, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+
+
+def restaurar_config_banco() -> None:
+    """Borra los overrides: Banco vuelve a su comportamiento de fábrica."""
+    if os.path.exists(ARCHIVO_CONFIG_BANCO):
+        os.remove(ARCHIVO_CONFIG_BANCO)

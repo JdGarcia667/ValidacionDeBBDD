@@ -102,18 +102,26 @@ class EntidadConfigurable(ValidadorEntidad):
             return {}
         from core.multi_loader import iter_chunks
         from core.limites_operaciones import reagregar
-        parc_ab, parc_ef = [], []
+        parc_ab, parc_ef_usd, parc_ef_mxn = [], [], []
+        parc_individuales: dict[str, list[pd.DataFrame]] = {}
         for offset, chunk in iter_chunks(db_path):
             if progreso:
                 progreso(f"Límites de operación (desde fila {offset:,})...")
             lim.df = chunk
-            ga, ge = lim.agrupar()
+            ga, ge_usd, ge_mxn = lim.agrupar()
             if ga is not None and not ga.empty:
                 parc_ab.append(ga)
-            if ge is not None and not ge.empty:
-                parc_ef.append(ge)
-        g_ab, g_ef = reagregar(parc_ab, parc_ef)
-        return lim.aplicar_limites(g_ab, g_ef)
+            if ge_usd is not None and not ge_usd.empty:
+                parc_ef_usd.append(ge_usd)
+            if ge_mxn is not None and not ge_mxn.empty:
+                parc_ef_mxn.append(ge_mxn)
+            for nombre, df_hallazgos in lim.individuales().items():
+                parc_individuales.setdefault(nombre, []).append(df_hallazgos)
+        g_ab, g_ef_usd, g_ef_mxn = reagregar(parc_ab, parc_ef_usd, parc_ef_mxn)
+        resultado = lim.aplicar_limites(g_ab, g_ef_usd, g_ef_mxn)
+        for nombre, partes in parc_individuales.items():
+            resultado[nombre] = pd.concat(partes, ignore_index=True)
+        return resultado
 
     # ------------------------------------------------------------------ #
     def _validar(self, df, mapeo, campos: list[CampoConfig], id_logico) -> dict:

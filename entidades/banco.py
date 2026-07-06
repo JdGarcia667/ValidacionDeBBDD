@@ -11,12 +11,16 @@ import pandas as pd
 
 import pandas as pd
 
-from core.validator import Validator
+from core.validator import Validator, DEFAULT_CONFIG as _VALIDATOR_DEFAULT_CONFIG
 from core.validator_operaciones import ValidatorOperaciones
 from core.niveles import validar_requisitos
 from core.limites_operaciones import LimitesOperaciones
 from .base import ValidadorEntidad
 from .modelo import RequisitoNivel, LimiteOperacion
+# OJO: NO importar entidades.registro a nivel de módulo — registro.py importa
+# BancoValidador de este mismo archivo (import circular). Se importa dentro de
+# config_efectiva() en su lugar (lazy import), donde ya no hay ciclo porque
+# para entonces ambos módulos ya terminaron de cargar.
 
 
 # Campos requeridos para clientes (identicos a core/mapper.py: Mapper.CAMPOS_REQUERIDOS)
@@ -103,6 +107,8 @@ REQUISITOS_BANCO = [
 CAMPOS_OPERACION = [
     "id_operacion", "id_cuenta", "id_cliente", "monto", "tipo_operacion",
     "instrumento_monetario", "fecha_operacion", "nivel_cuenta", "tipo de persona",
+    # Saldo de la cuenta (para el tope de saldo en N1, en UDIS).
+    "saldo",
 ]
 
 # --- Límites de operación por nivel (montos) --- #
@@ -111,9 +117,10 @@ CAMPOS_LIMITES = {
     "fecha": "fecha_operacion", "monto": "monto", "cuenta": "id_cuenta",
     "cliente": "id_cliente", "nivel": "nivel_cuenta", "tipo_persona": "tipo de persona",
     "tipo_operacion": "tipo_operacion", "instrumento": "instrumento_monetario",
+    "saldo": "saldo",
 }
 # Qué valores de tipo_operacion son ABONO y de instrumento son EFECTIVO.
-VALORES_ABONO = ["IN", "ABONO", "DEPOSITO", "DEP", "ENTRADA", "CREDITO"]
+VALORES_ABONO = ["IN", "ABONO", "DEPOSITO", "DEP", "ENTRADA", "CREDITO", "PAGO"]
 VALORES_EFECTIVO = ["EFECTIVO", "CASH"]
 
 _L = LimiteOperacion
@@ -122,11 +129,49 @@ LIMITES_BANCO = [
     _L("abono_mensual", "1", "fisica", 750),
     _L("abono_mensual", "2", "fisica", 3000),
     _L("abono_mensual", "3", "ambos", 10000),
+    _L("abono_mensual", "3L", "ambos", 10000),
     _L("abono_mensual", "4", "ambos", None),
+    _L("abono_mensual", "4L", "ambos", 30000),
     # Efectivo en USD por tipo de persona (mensual por cliente).
     _L("efectivo_usd", "todos", "fisica", 4000),
     _L("efectivo_usd", "todos", "moral", 0),
+    # Movimientos individuales en efectivo (abono/depósito/pago), en MXN.
+    # Física "simple": 300,000; física con actividad empresarial, moral y
+    # fideicomiso: 500,000.
+    _L("efectivo_individual_mxn", "todos", "fisica", 300000),
+    _L("efectivo_individual_mxn", "todos", "fisica_ae", 500000),
+    _L("efectivo_individual_mxn", "todos", "moral", 500000),
+    _L("efectivo_individual_mxn", "todos", "fideicomiso", 500000),
+    # Efectivo mensual en MXN (todos los movimientos en efectivo, cualquier
+    # sentido), tope único para todos los tipos de persona.
+    _L("efectivo_mensual_mxn", "todos", "ambos", 1000000),
+    # Operaciones relevantes: cargo o abono individual en efectivo cuyo
+    # equivalente en USD sea >= al umbral, para cualquier tipo de persona.
+    _L("operacion_relevante_usd", "todos", "ambos", 7500),
+    # Saldo de cuenta en UDIS: solo Nivel 1.
+    _L("saldo_udis", "1", "ambos", 1000),
 ]
+
+
+def config_efectiva() -> dict:
+    """Config de Banco vigente: overrides guardados por la UI si existen, si no
+    las constantes de fábrica de este archivo. Reemplazo TOTAL por clave de
+    nivel superior (no merge por entrada) — la usan tanto BancoValidador (para
+    validar) como la UI (para precargar el editor)."""
+    from . import registro
+    overrides = registro.cargar_config_banco() or {}
+    return {
+        "requisitos_cliente": (
+            [RequisitoNivel.from_dict(d) for d in overrides["requisitos_cliente"]]
+            if "requisitos_cliente" in overrides else list(REQUISITOS_BANCO)),
+        "limites_operacion": (
+            [LimiteOperacion.from_dict(d) for d in overrides["limites_operacion"]]
+            if "limites_operacion" in overrides else list(LIMITES_BANCO)),
+        "valores_abono": overrides.get("valores_abono", list(VALORES_ABONO)),
+        "valores_efectivo": overrides.get("valores_efectivo", list(VALORES_EFECTIVO)),
+        "validator_config": {**_VALIDATOR_DEFAULT_CONFIG,
+                            **overrides.get("validator_config", {})},
+    }
 
 
 class BancoValidador(ValidadorEntidad):
@@ -148,8 +193,10 @@ class BancoValidador(ValidadorEntidad):
 
     def validar_clientes(self, df: pd.DataFrame, mapeo: dict,
                          tipo_persona_default: str | None = None) -> dict:
-        errores, _ = Validator(df, mapeo, tipo_persona_default).validar_todo()
-        hallazgos = validar_requisitos(df, mapeo, REQUISITOS_BANCO,
+        cfg = config_efectiva()
+        errores, _ = Validator(df, mapeo, tipo_persona_default,
+                               config=cfg["validator_config"]).validar_todo()
+        hallazgos = validar_requisitos(df, mapeo, cfg["requisitos_cliente"],
                                        campo_nivel="Nivel_cuenta",
                                        campo_tipo_persona="tipo de persona",
                                        campo_modalidad="modalidad de apertura",
@@ -167,9 +214,10 @@ class BancoValidador(ValidadorEntidad):
 
     def _limites(self, df, mapeo, config) -> LimitesOperaciones:
         """Construye el validador de límites con los archivos de tasas del config."""
+        cfg = config_efectiva()
         return LimitesOperaciones(
-            df, mapeo, LIMITES_BANCO, campos=CAMPOS_LIMITES,
-            valores_abono=VALORES_ABONO, valores_efectivo=VALORES_EFECTIVO,
+            df, mapeo, cfg["limites_operacion"], campos=CAMPOS_LIMITES,
+            valores_abono=cfg["valores_abono"], valores_efectivo=cfg["valores_efectivo"],
             archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
             archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
 
@@ -178,20 +226,23 @@ class BancoValidador(ValidadorEntidad):
                                 tipo_persona_default: str | None = None,
                                 progreso=None) -> dict:
         from core.sqlite_validator import SQLiteValidator
+        cfg = config_efectiva()
         errores, _ = SQLiteValidator(
             db_path, mapeo, tipo_persona_default, progreso=progreso,
-            requisitos=REQUISITOS_BANCO, campo_nivel="Nivel_cuenta",
+            requisitos=cfg["requisitos_cliente"], campo_nivel="Nivel_cuenta",
             campo_tipo_persona="tipo de persona", campo_modalidad="modalidad de apertura",
-            default_tipo=_default_tipo(tipo_persona_default)).validar_todo()
+            default_tipo=_default_tipo(tipo_persona_default),
+            validator_config=cfg["validator_config"]).validar_todo()
         return errores
 
     def validar_operaciones_sqlite(self, db_path: str, mapeo: dict,
                                    config: dict | None = None, progreso=None) -> dict:
         from core.sqlite_validator_operaciones import SQLiteValidatorOperaciones
         config = config or {}
+        cfg = config_efectiva()
         limites_kwargs = dict(
-            limites=LIMITES_BANCO, campos=CAMPOS_LIMITES,
-            valores_abono=VALORES_ABONO, valores_efectivo=VALORES_EFECTIVO,
+            limites=cfg["limites_operacion"], campos=CAMPOS_LIMITES,
+            valores_abono=cfg["valores_abono"], valores_efectivo=cfg["valores_efectivo"],
             archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
             archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
         errores, _ = SQLiteValidatorOperaciones(

@@ -29,6 +29,63 @@ DIRECCION_PARTES = DIRECCION_OBLIGATORIAS + DIRECCION_CIUDAD_ALCALDIA + DIRECCIO
 # Más de 5 dígitos iguales consecutivos en un teléfono (6 o más).
 TELEFONO_REPETIDOS_RE = re.compile(r"(\d)\1{5}")
 
+# Parámetros de validación con valor por defecto (= comportamiento histórico,
+# hardcoded, de este archivo). `Validator(config=...)` puede sobreescribirlos
+# (usado por Banco para permitir ajustarlos desde la UI sin tocar código).
+DEFAULT_CONFIG = {
+    "telefono_min_digitos": TELEFONO_MIN_DIGITOS,
+    "telefono_max_repetidos": 5,               # dispara error con MÁS de N repetidos
+    "direccion_min_separadores": DIRECCION_MIN_SEPARADORES,
+    "edad_minima": 18,
+    "edad_maxima": 110,
+    "edad_irrealista_max": 100,
+    "year_corte_siglo": YEAR_CORTE_SIGLO,
+    "checks_deshabilitados": [],
+}
+
+# Claves togglables (para que la UI las liste sin duplicar etiquetas en otro
+# archivo). CHECKS_CAMPO coincide 1:1 con las claves de la lista `validaciones`
+# del bucle "Otros errores"; CHECKS_GENERALES son bloques/validaciones globales
+# o vectorizadas que no forman parte de ese bucle.
+CHECKS_CAMPO = {
+    "id_cliente": "ID de cliente vacío",
+    "nombre": "Nombre / apellidos",
+    "fecha_nacimiento": "Fecha de nacimiento (o constitución) y rango de edad",
+    "genero": "Género (solo física)",
+    "tipo de persona": "Tipo de persona vacío",
+    "estatus_cliente": "Estatus del cliente vacío",
+    "fecha_inicio_relacion": "Fechas de inicio/término de relación",
+    "grado_riesgo": "Grado de riesgo vacío",
+    "fecha_riesgo": "Fecha de riesgo vacía/inválida",
+    "PEP": "PEP vacío",
+    "Nacionalidad": "Nacionalidad vacía",
+    "Pais_nacimiento": "País de nacimiento vacío/no reconocido",
+    "entidad_federativa": "Entidad federativa vacía/no válida",
+    "Actividad_generica": "Ambas actividades (genérica/específica) vacías",
+    "Correo electronico": "Correo electrónico vacío/sin @",
+    "Dirección": "Dirección/domicilio incompleto",
+    "Nivel_cuenta": "Nivel de cuenta vacío",
+    "firma electronica avanzada": "Firma electrónica avanzada: formato",
+    "representante_legal": "Representante legal (persona moral)",
+    "numero_identificacion_fiscal": "ID fiscal (moral extranjera)",
+    "pais_asignacion_rfc": "País de asignación de RFC/ID fiscal (moral extranjera)",
+}
+CHECKS_GENERALES = {
+    "celdas_vacias_criticas": "Celdas vacías en columnas críticas",
+    "ids_duplicados": "IDs de cliente duplicados",
+    "nombres_duplicados_curp": "Mismo CURP con nombre distinto",
+    "firmas_duplicadas": "Firma electrónica avanzada duplicada",
+    "curp_duplicado": "CURP asignado a más de un cliente",
+    "rfc_duplicado": "RFC asignado a más de un cliente",
+    "fechas_futuras": "Fechas futuras",
+    "edades_irrealistas": "Edades irrealistas",
+    "menores_18": "Menores de edad mínima",
+    "telefono_formato": "Formato de teléfono",
+    "curp_formato": "Formato de CURP",
+    "rfc_formato": "Formato de RFC",
+    "inconsistencia_nacimiento": "Inconsistencia entidad/país/nacionalidad",
+}
+
 
 def _celda_vacia(v) -> bool:
     return pd.isna(v) or str(v).strip() == ''
@@ -42,10 +99,22 @@ class Validator:
     # Variantes de texto que se reconocen como México
     _VARIANTES_MEXICO = {'MEXICO', 'MEXICANA', 'MEX', 'MX'}
 
-    def __init__(self, df: pd.DataFrame, mapeo: dict, tipo_persona_default: str | None = None):
+    def __init__(self, df: pd.DataFrame, mapeo: dict, tipo_persona_default: str | None = None,
+                 config: dict | None = None):
         self.df = df
         self.mapeo = mapeo
         self.tipo_persona_default = tipo_persona_default
+
+        cfg = {**DEFAULT_CONFIG, **(config or {})}
+        self.telefono_min_digitos = cfg["telefono_min_digitos"]
+        self.telefono_max_repetidos = int(cfg["telefono_max_repetidos"])
+        self.telefono_repetidos_re = re.compile(rf"(\d)\1{{{self.telefono_max_repetidos}}}")
+        self.direccion_min_separadores = cfg["direccion_min_separadores"]
+        self.edad_minima = cfg["edad_minima"]
+        self.edad_maxima = cfg["edad_maxima"]
+        self.edad_irrealista_max = cfg["edad_irrealista_max"]
+        self.year_corte_siglo = cfg["year_corte_siglo"]
+        self.checks_deshabilitados = set(cfg["checks_deshabilitados"] or [])
 
         self.real_columns = {normalizar_texto(c): c for c in self.df.columns}
         self.col_mapping = {}
@@ -164,7 +233,7 @@ class Validator:
                 mes = int(numeros[1])
                 año = int(numeros[2])
                 if año < 100:
-                    año += 2000 if año <= YEAR_CORTE_SIGLO else 1900
+                    año += 2000 if año <= self.year_corte_siglo else 1900
                 if 1 <= mes <= 12 and 1 <= dia <= 31 and 1900 <= año <= 2100:
                     return pd.Timestamp(year=año, month=mes, day=dia)
         except (ValueError, TypeError):
@@ -233,10 +302,10 @@ class Validator:
                 return None
             hoy = date.today()
             edad = hoy.year - fecha.year - ((hoy.month, hoy.day) < (fecha.month, fecha.day))
-            if edad < 18:
-                return f"Edad {edad} años menor a 18"
-            elif edad > 110:
-                return f"Edad {edad} años mayor a 110"
+            if edad < self.edad_minima:
+                return f"Edad {edad} años menor a {self.edad_minima}"
+            elif edad > self.edad_maxima:
+                return f"Edad {edad} años mayor a {self.edad_maxima}"
         except (ValueError, TypeError):
             return "Fecha no procesable"
         return None
@@ -360,10 +429,10 @@ class Validator:
         if telefono_limpio in ('', 'nan'):
             return None
         errores = []
-        if len(telefono_limpio) != TELEFONO_MIN_DIGITOS:
-            errores.append(f"Longitud {len(telefono_limpio)}, se esperan {TELEFONO_MIN_DIGITOS}")
-        if TELEFONO_REPETIDOS_RE.search(telefono_limpio):
-            errores.append("Más de 5 dígitos iguales consecutivos")
+        if len(telefono_limpio) != self.telefono_min_digitos:
+            errores.append(f"Longitud {len(telefono_limpio)}, se esperan {self.telefono_min_digitos}")
+        if self.telefono_repetidos_re.search(telefono_limpio):
+            errores.append(f"Más de {self.telefono_max_repetidos} dígitos iguales consecutivos")
         return "; ".join(errores) if errores else None
 
     def _validar_correo(self, row):
@@ -453,8 +522,8 @@ class Validator:
             if pd.isna(valor) or valor == '':
                 return "Dirección vacía"
             direc = str(valor)
-            if direc.count(' ') + direc.count(',') < DIRECCION_MIN_SEPARADORES:
-                return f"Dirección muy corta (menos de {DIRECCION_MIN_SEPARADORES} separadores)"
+            if direc.count(' ') + direc.count(',') < self.direccion_min_separadores:
+                return f"Dirección muy corta (menos de {self.direccion_min_separadores} separadores)"
             return None
         # Caso 2: domicilio dividido en columnas.
         #  - obligatorias: calle, número exterior, entidad, CP, país.
@@ -622,23 +691,24 @@ class Validator:
 
         # 1. Celdas vacías en columnas críticas
         registros_con_nulos = []
-        for campo in self.columnas_criticas:
-            col = self.col_mapping.get(campo)
-            if col and col in self.df.columns:
-                nulos = self.df[self.df[col].isnull()].copy()
-                # El género no aplica a personas morales: no marcar su vacío.
-                if campo == 'genero' and not nulos.empty:
-                    nulos = nulos[~es_moral.loc[nulos.index]]
-                if not nulos.empty:
-                    base = self._obtener_columnas_base()
-                    cols = list(base.values()) + [col]
-                    df_nulo = nulos[cols].copy()
-                    if campo == 'fecha_nacimiento':
-                        df_nulo['Tipo_Error'] = "Celda vacía en " + \
-                            self._etiqueta_fecha_nac(df_nulo.index, es_moral)
-                    else:
-                        df_nulo['Tipo_Error'] = f"Celda vacía en {campo}"
-                    registros_con_nulos.append(df_nulo)
+        if "celdas_vacias_criticas" not in self.checks_deshabilitados:
+            for campo in self.columnas_criticas:
+                col = self.col_mapping.get(campo)
+                if col and col in self.df.columns:
+                    nulos = self.df[self.df[col].isnull()].copy()
+                    # El género no aplica a personas morales: no marcar su vacío.
+                    if campo == 'genero' and not nulos.empty:
+                        nulos = nulos[~es_moral.loc[nulos.index]]
+                    if not nulos.empty:
+                        base = self._obtener_columnas_base()
+                        cols = list(base.values()) + [col]
+                        df_nulo = nulos[cols].copy()
+                        if campo == 'fecha_nacimiento':
+                            df_nulo['Tipo_Error'] = "Celda vacía en " + \
+                                self._etiqueta_fecha_nac(df_nulo.index, es_moral)
+                        else:
+                            df_nulo['Tipo_Error'] = f"Celda vacía en {campo}"
+                        registros_con_nulos.append(df_nulo)
         if registros_con_nulos:
             df_nulos = pd.concat(registros_con_nulos)
             errores_dataframes['Celdas Vacias'] = df_nulos
@@ -647,61 +717,67 @@ class Validator:
         # 2. IDs duplicados   y   3. Nombres duplicados con mismo CURP
         # (validaciones globales; se omiten en el modo por lotes)
         if incluir_duplicados:
-            df_ids_dup = self._validar_ids_unicos()
-            if df_ids_dup is not None:
-                errores_dataframes['IDs Duplicados'] = df_ids_dup
-                errores_totales += len(df_ids_dup)
+            if "ids_duplicados" not in self.checks_deshabilitados:
+                df_ids_dup = self._validar_ids_unicos()
+                if df_ids_dup is not None:
+                    errores_dataframes['IDs Duplicados'] = df_ids_dup
+                    errores_totales += len(df_ids_dup)
 
-            df_nombres_dup = self._validar_nombres_duplicados_con_curp()
-            if df_nombres_dup is not None:
-                errores_dataframes['Nombres Duplicados (CURP)'] = df_nombres_dup
-                errores_totales += len(df_nombres_dup)
+            if "nombres_duplicados_curp" not in self.checks_deshabilitados:
+                df_nombres_dup = self._validar_nombres_duplicados_con_curp()
+                if df_nombres_dup is not None:
+                    errores_dataframes['Nombres Duplicados (CURP)'] = df_nombres_dup
+                    errores_totales += len(df_nombres_dup)
 
-            df_firmas_dup = self._duplicados_de_columna(
-                'firma electronica avanzada', 'Firma electrónica avanzada duplicada')
-            if df_firmas_dup is not None:
-                errores_dataframes['Firmas Duplicadas'] = df_firmas_dup
-                errores_totales += len(df_firmas_dup)
+            if "firmas_duplicadas" not in self.checks_deshabilitados:
+                df_firmas_dup = self._duplicados_de_columna(
+                    'firma electronica avanzada', 'Firma electrónica avanzada duplicada')
+                if df_firmas_dup is not None:
+                    errores_dataframes['Firmas Duplicadas'] = df_firmas_dup
+                    errores_totales += len(df_firmas_dup)
 
             # CURP y RFC únicos: un mismo CURP/RFC no puede estar en más de un cliente.
-            df_curp_dup = self._duplicados_de_columna(
-                'CURP', 'CURP asignado a más de un cliente', upper=True)
-            if df_curp_dup is not None:
-                errores_dataframes['CURPs Duplicados'] = df_curp_dup
-                errores_totales += len(df_curp_dup)
+            if "curp_duplicado" not in self.checks_deshabilitados:
+                df_curp_dup = self._duplicados_de_columna(
+                    'CURP', 'CURP asignado a más de un cliente', upper=True)
+                if df_curp_dup is not None:
+                    errores_dataframes['CURPs Duplicados'] = df_curp_dup
+                    errores_totales += len(df_curp_dup)
 
-            df_rfc_dup = self._duplicados_de_columna(
-                'RFC', 'RFC asignado a más de un cliente', upper=True)
-            if df_rfc_dup is not None:
-                errores_dataframes['RFCs Duplicados'] = df_rfc_dup
-                errores_totales += len(df_rfc_dup)
+            if "rfc_duplicado" not in self.checks_deshabilitados:
+                df_rfc_dup = self._duplicados_de_columna(
+                    'RFC', 'RFC asignado a más de un cliente', upper=True)
+                if df_rfc_dup is not None:
+                    errores_dataframes['RFCs Duplicados'] = df_rfc_dup
+                    errores_totales += len(df_rfc_dup)
 
         # 4. Fechas futuras
         registros_futuros = []
-        for campo in self.columnas_fecha:
-            col = self.col_mapping.get(campo)
-            # compat pandas>=3: antes era self.df[col].dtype == 'datetime64[ns]'
-            if col and col in self.df.columns and pd.api.types.is_datetime64_any_dtype(self.df[col]):
-                futuras = self.df[(self.df[col] > current_date) & self.df[col].notna()].copy()
-                if not futuras.empty:
-                    base = self._obtener_columnas_base()
-                    cols = list(base.values()) + [col]
-                    df_fut = futuras[cols].copy()
-                    if campo == 'fecha_nacimiento':
-                        etiqueta = self._etiqueta_fecha_nac(df_fut.index, es_moral)
-                        df_fut['Tipo_Error'] = "Fecha futura en " + etiqueta
-                        df_fut['Columna_Error'] = etiqueta
-                    else:
-                        df_fut['Tipo_Error'] = f"Fecha futura en {campo}"
-                        df_fut['Columna_Error'] = campo
-                    df_fut['Fecha_Afectada'] = df_fut[col].dt.strftime('%d/%m/%Y')
-                    registros_futuros.append(df_fut)
+        if "fechas_futuras" not in self.checks_deshabilitados:
+            for campo in self.columnas_fecha:
+                col = self.col_mapping.get(campo)
+                # compat pandas>=3: antes era self.df[col].dtype == 'datetime64[ns]'
+                if col and col in self.df.columns and pd.api.types.is_datetime64_any_dtype(self.df[col]):
+                    futuras = self.df[(self.df[col] > current_date) & self.df[col].notna()].copy()
+                    if not futuras.empty:
+                        base = self._obtener_columnas_base()
+                        cols = list(base.values()) + [col]
+                        df_fut = futuras[cols].copy()
+                        if campo == 'fecha_nacimiento':
+                            etiqueta = self._etiqueta_fecha_nac(df_fut.index, es_moral)
+                            df_fut['Tipo_Error'] = "Fecha futura en " + etiqueta
+                            df_fut['Columna_Error'] = etiqueta
+                        else:
+                            df_fut['Tipo_Error'] = f"Fecha futura en {campo}"
+                            df_fut['Columna_Error'] = campo
+                        df_fut['Fecha_Afectada'] = df_fut[col].dt.strftime('%d/%m/%Y')
+                        registros_futuros.append(df_fut)
         if registros_futuros:
             df_futuras = pd.concat(registros_futuros)
             errores_dataframes['Fechas Futuras'] = df_futuras
             errores_totales += len(df_futuras)
 
-        # 5. Edades irrealistas y menores de 18 años
+        # 5. Edades irrealistas y menores de edad mínima
         col_nac = self.col_mapping.get('fecha_nacimiento')
         # compat pandas>=3: antes era self.df[col_nac].dtype == 'datetime64[ns]'
         if col_nac and col_nac in self.df.columns and pd.api.types.is_datetime64_any_dtype(self.df[col_nac]):
@@ -709,29 +785,31 @@ class Validator:
             df_temp['Edad'] = (current_date - df_temp[col_nac]).dt.days / 365.25
             # Los controles de edad solo aplican a persona física (en moral la
             # fecha es de constitución, sin límite de edad).
-            irrealistas_idx = (((df_temp['Edad'] > 100) | (df_temp['Edad'] < 0))
-                               & df_temp[col_nac].notna() & ~es_moral)
-            if irrealistas_idx.any():
-                base = self._obtener_columnas_base()
-                cols = list(base.values()) + [col_nac]
-                df_irr = self.df.loc[irrealistas_idx, cols].copy()
-                df_irr['Edad'] = df_temp.loc[irrealistas_idx, 'Edad']
-                df_irr['Tipo_Error'] = 'Edad irrealista'
-                errores_dataframes['Edades Irrealistas'] = df_irr
-                errores_totales += len(df_irr)
-            menores_idx = (df_temp['Edad'] < 18) & ~es_moral
-            if menores_idx.any():
-                base = self._obtener_columnas_base()
-                cols = list(base.values()) + [col_nac]
-                df_men = self.df.loc[menores_idx, cols].copy()
-                df_men['Edad'] = df_temp.loc[menores_idx, 'Edad']
-                df_men['Tipo_Error'] = 'Menor de 18 años'
-                errores_dataframes['Menores de 18 Años'] = df_men
-                errores_totales += len(df_men)
+            if "edades_irrealistas" not in self.checks_deshabilitados:
+                irrealistas_idx = (((df_temp['Edad'] > self.edad_irrealista_max) | (df_temp['Edad'] < 0))
+                                   & df_temp[col_nac].notna() & ~es_moral)
+                if irrealistas_idx.any():
+                    base = self._obtener_columnas_base()
+                    cols = list(base.values()) + [col_nac]
+                    df_irr = self.df.loc[irrealistas_idx, cols].copy()
+                    df_irr['Edad'] = df_temp.loc[irrealistas_idx, 'Edad']
+                    df_irr['Tipo_Error'] = 'Edad irrealista'
+                    errores_dataframes['Edades Irrealistas'] = df_irr
+                    errores_totales += len(df_irr)
+            if "menores_18" not in self.checks_deshabilitados:
+                menores_idx = (df_temp['Edad'] < self.edad_minima) & ~es_moral
+                if menores_idx.any():
+                    base = self._obtener_columnas_base()
+                    cols = list(base.values()) + [col_nac]
+                    df_men = self.df.loc[menores_idx, cols].copy()
+                    df_men['Edad'] = df_temp.loc[menores_idx, 'Edad']
+                    df_men['Tipo_Error'] = f'Menor de {self.edad_minima} años'
+                    errores_dataframes['Menores de 18 Años'] = df_men
+                    errores_totales += len(df_men)
 
         # 6. Teléfonos (longitud y dígitos repetidos)
         col_tel = self.col_mapping.get('Teléfono')
-        if col_tel and col_tel in self.df.columns:
+        if col_tel and col_tel in self.df.columns and "telefono_formato" not in self.checks_deshabilitados:
             df_temp = self.df.copy()
             df_temp['Telefono_Errors'] = df_temp.apply(self._validate_telefono_row, axis=1)
             invalidos_idx = df_temp['Telefono_Errors'].notna()
@@ -745,7 +823,7 @@ class Validator:
 
         # 7. CURP (solo persona física: las morales no tienen CURP)
         col_curp = self.col_mapping.get('CURP')
-        if col_curp and col_curp in self.df.columns:
+        if col_curp and col_curp in self.df.columns and "curp_formato" not in self.checks_deshabilitados:
             df_temp = self.df.copy()
             df_temp['CURP_Validation_Errors'] = df_temp.apply(self._validate_curp_row, axis=1)
             curps_invalidos_idx = df_temp['CURP_Validation_Errors'].notna() & ~es_moral
@@ -759,7 +837,7 @@ class Validator:
 
         # 8. RFC
         col_rfc = self.col_mapping.get('RFC')
-        if col_rfc and col_rfc in self.df.columns:
+        if col_rfc and col_rfc in self.df.columns and "rfc_formato" not in self.checks_deshabilitados:
             df_temp = self.df.copy()
             df_temp['RFC_Validation_Errors'] = df_temp.apply(self._validate_rfc_row, axis=1)
             rfcs_invalidos_idx = df_temp['RFC_Validation_Errors'].notna()
@@ -775,7 +853,8 @@ class Validator:
         col_entidad = self.col_mapping.get('entidad_federativa')
         col_pais = self.col_mapping.get('Pais_nacimiento')
         col_nacionalidad = self.col_mapping.get('Nacionalidad')
-        if all(x is not None for x in [col_entidad, col_pais, col_nacionalidad]):
+        if (all(x is not None for x in [col_entidad, col_pais, col_nacionalidad])
+                and "inconsistencia_nacimiento" not in self.checks_deshabilitados):
             df_temp = self.df.copy()
             df_temp['Entidad_norm'] = df_temp[col_entidad].astype(str).apply(self._normalizar_entidad)
             df_temp['Pais_es_mexico'] = df_temp[col_pais].apply(self._es_mexicano)
@@ -796,6 +875,31 @@ class Validator:
 
         # 10. Otros errores (por fila)
         otros_errores = []
+        validaciones = [
+            ('id_cliente', self._validar_id_cliente),
+            ('nombre', self._validar_nombre_completo),
+            ('fecha_nacimiento', self._validar_fecha_nacimiento),
+            ('genero', self._validar_genero),
+            ('tipo de persona', self._validar_tipo_persona),
+            ('estatus_cliente', self._validar_estatus_cliente),
+            ('fecha_inicio_relacion', self._validar_fechas_relacion),
+            ('grado_riesgo', self._validar_grado_riesgo),
+            ('fecha_riesgo', self._validar_fecha_riesgo),
+            ('PEP', self._validar_pep),
+            ('Nacionalidad', self._validar_nacionalidad),
+            ('Pais_nacimiento', self._validar_pais_nacimiento),
+            ('entidad_federativa', self._validar_entidad_federativa),
+            ('Actividad_generica', self._validar_actividades),
+            ('Correo electronico', self._validar_correo),
+            ('Dirección', self._validar_direccion),
+            ('Nivel_cuenta', self._validar_nivel_cuenta),
+            ('firma electronica avanzada', self._validar_firma_electronica),
+            ('representante_legal', self._validar_representante_legal),
+            ('numero_identificacion_fiscal', self._validar_id_fiscal_extranjera),
+            ('pais_asignacion_rfc', self._validar_pais_asignacion_rfc),
+        ]
+        validaciones = [(c, f) for c, f in validaciones if c not in self.checks_deshabilitados]
+
         for idx, row in self.df.iterrows():
             fila_num = idx + 2
             id_cliente = self._get_valor(row, 'id_cliente') if self.tiene_id else None
@@ -808,30 +912,6 @@ class Validator:
                     'error': error,
                     'valor': self._get_valor(row, campo)
                 })
-
-            validaciones = [
-                ('id_cliente', self._validar_id_cliente),
-                ('nombre', self._validar_nombre_completo),
-                ('fecha_nacimiento', self._validar_fecha_nacimiento),
-                ('genero', self._validar_genero),
-                ('tipo de persona', self._validar_tipo_persona),
-                ('estatus_cliente', self._validar_estatus_cliente),
-                ('fecha_inicio_relacion', self._validar_fechas_relacion),
-                ('grado_riesgo', self._validar_grado_riesgo),
-                ('fecha_riesgo', self._validar_fecha_riesgo),
-                ('PEP', self._validar_pep),
-                ('Nacionalidad', self._validar_nacionalidad),
-                ('Pais_nacimiento', self._validar_pais_nacimiento),
-                ('entidad_federativa', self._validar_entidad_federativa),
-                ('Actividad_generica', self._validar_actividades),
-                ('Correo electronico', self._validar_correo),
-                ('Dirección', self._validar_direccion),
-                ('Nivel_cuenta', self._validar_nivel_cuenta),
-                ('firma electronica avanzada', self._validar_firma_electronica),
-                ('representante_legal', self._validar_representante_legal),
-                ('numero_identificacion_fiscal', self._validar_id_fiscal_extranjera),
-                ('pais_asignacion_rfc', self._validar_pais_asignacion_rfc),
-            ]
 
             for campo, func in validaciones:
                 err = func(row)
