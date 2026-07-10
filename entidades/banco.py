@@ -109,6 +109,9 @@ CAMPOS_OPERACION = [
     "instrumento_monetario", "fecha_operacion", "nivel_cuenta", "tipo de persona",
     # Saldo de la cuenta (para el tope de saldo en N1, en UDIS).
     "saldo",
+    # Moneda en la que YA viene declarado el monto (p. ej. "USD"/"MXN"). Si no
+    # se mapea, todo se asume MXN y se convierte igual que antes.
+    "moneda_operacion",
 ]
 
 # --- Límites de operación por nivel (montos) --- #
@@ -117,11 +120,14 @@ CAMPOS_LIMITES = {
     "fecha": "fecha_operacion", "monto": "monto", "cuenta": "id_cuenta",
     "cliente": "id_cliente", "nivel": "nivel_cuenta", "tipo_persona": "tipo de persona",
     "tipo_operacion": "tipo_operacion", "instrumento": "instrumento_monetario",
-    "saldo": "saldo",
+    "saldo": "saldo", "moneda": "moneda_operacion",
 }
-# Qué valores de tipo_operacion son ABONO y de instrumento son EFECTIVO.
+# Qué valores de tipo_operacion son ABONO y de instrumento son EFECTIVO /
+# CHEQUE DE CAJA; qué valores de la columna de moneda indican dólares.
 VALORES_ABONO = ["IN", "ABONO", "DEPOSITO", "DEP", "ENTRADA", "CREDITO", "PAGO"]
 VALORES_EFECTIVO = ["EFECTIVO", "CASH"]
+VALORES_CHEQUE_CAJA = ["CHEQUE DE CAJA", "CHEQUE CAJA", "CASHIER CHECK", "CASHIERS CHECK"]
+VALORES_MONEDA_USD = ["USD", "DOLARES", "DOLAR", "US$", "DLS"]
 
 _L = LimiteOperacion
 LIMITES_BANCO = [
@@ -132,9 +138,10 @@ LIMITES_BANCO = [
     _L("abono_mensual", "3L", "ambos", 10000),
     _L("abono_mensual", "4", "ambos", None),
     _L("abono_mensual", "4L", "ambos", 30000),
-    # Efectivo en USD por tipo de persona (mensual por cliente).
+    # Abonos en efectivo en USD por tipo de persona (mensual por cliente),
+    # dispara con monto acumulado >= al tope: física 4,000; moral 14,000.
     _L("efectivo_usd", "todos", "fisica", 4000),
-    _L("efectivo_usd", "todos", "moral", 0),
+    _L("efectivo_usd", "todos", "moral", 14000),
     # Movimientos individuales en efectivo (abono/depósito/pago), en MXN.
     # Física "simple": 300,000; física con actividad empresarial, moral y
     # fideicomiso: 500,000.
@@ -148,6 +155,12 @@ LIMITES_BANCO = [
     # Operaciones relevantes: cargo o abono individual en efectivo cuyo
     # equivalente en USD sea >= al umbral, para cualquier tipo de persona.
     _L("operacion_relevante_usd", "todos", "ambos", 7500),
+    # Abono individual en efectivo ya declarado en dólares (sin conversión),
+    # para cualquier tipo de persona.
+    _L("efectivo_abono_usd_individual", "todos", "ambos", 500),
+    # Cargo o abono con instrumento 'cheque de caja', convertido a USD si
+    # hace falta, para cualquier tipo de persona.
+    _L("cheque_caja_usd", "todos", "ambos", 10000),
     # Saldo de cuenta en UDIS: solo Nivel 1.
     _L("saldo_udis", "1", "ambos", 1000),
 ]
@@ -169,6 +182,8 @@ def config_efectiva() -> dict:
             if "limites_operacion" in overrides else list(LIMITES_BANCO)),
         "valores_abono": overrides.get("valores_abono", list(VALORES_ABONO)),
         "valores_efectivo": overrides.get("valores_efectivo", list(VALORES_EFECTIVO)),
+        "valores_cheque_caja": overrides.get("valores_cheque_caja", list(VALORES_CHEQUE_CAJA)),
+        "valores_moneda_usd": overrides.get("valores_moneda_usd", list(VALORES_MONEDA_USD)),
         "validator_config": {**_VALIDATOR_DEFAULT_CONFIG,
                             **overrides.get("validator_config", {})},
     }
@@ -218,6 +233,8 @@ class BancoValidador(ValidadorEntidad):
         return LimitesOperaciones(
             df, mapeo, cfg["limites_operacion"], campos=CAMPOS_LIMITES,
             valores_abono=cfg["valores_abono"], valores_efectivo=cfg["valores_efectivo"],
+            valores_cheque_caja=cfg["valores_cheque_caja"],
+            valores_moneda_usd=cfg["valores_moneda_usd"],
             archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
             archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
 
@@ -243,6 +260,8 @@ class BancoValidador(ValidadorEntidad):
         limites_kwargs = dict(
             limites=cfg["limites_operacion"], campos=CAMPOS_LIMITES,
             valores_abono=cfg["valores_abono"], valores_efectivo=cfg["valores_efectivo"],
+            valores_cheque_caja=cfg["valores_cheque_caja"],
+            valores_moneda_usd=cfg["valores_moneda_usd"],
             archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
             archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"))
         errores, _ = SQLiteValidatorOperaciones(

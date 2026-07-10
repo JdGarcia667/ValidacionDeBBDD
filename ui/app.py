@@ -36,6 +36,7 @@ NO_MAPEAR = "(no mapear)"
 UNIDAD_LIMITE = {
     "abono_mensual": "UDIS", "efectivo_usd": "USD", "efectivo_mensual_mxn": "MXN",
     "efectivo_individual_mxn": "MXN", "operacion_relevante_usd": "USD",
+    "efectivo_abono_usd_individual": "USD", "cheque_caja_usd": "USD",
     "saldo_udis": "UDIS",
 }
 
@@ -586,7 +587,8 @@ class App:
         self.op_roles = [("fecha", "Fecha"), ("monto", "Monto"), ("cuenta", "Cuenta"),
                          ("cliente", "Cliente"), ("nivel", "Nivel"),
                          ("tipo_persona", "Tipo persona"), ("tipo_operacion", "Tipo operación"),
-                         ("instrumento", "Instrumento"), ("saldo", "Saldo")]
+                         ("instrumento", "Instrumento"), ("saldo", "Saldo"),
+                         ("moneda", "Moneda")]
         self.op_dd = {rol: ft.Dropdown(label=etq, width=150, dense=True)
                       for rol, etq in self.op_roles}
         self.tf_abono = ft.TextField(label="Valores de ABONO (coma)", width=300, dense=True,
@@ -595,6 +597,13 @@ class App:
         self.tf_efectivo = ft.TextField(label="Valores de EFECTIVO (coma)", width=300, dense=True,
                                         value=(", ".join(existing.op_valores_efectivo) if existing
                                                else "EFECTIVO"))
+        self.tf_cheque_caja = ft.TextField(
+            label="Valores de CHEQUE DE CAJA (coma)", width=300, dense=True,
+            value=(", ".join(existing.op_valores_cheque_caja) if existing
+                   else "CHEQUE DE CAJA"))
+        self.tf_moneda_usd = ft.TextField(
+            label="Valores de moneda = DOLARES (coma)", width=300, dense=True,
+            value=(", ".join(existing.op_valores_moneda_usd) if existing else "USD"))
         # Sinónimos de nivel: para mapear valores que no dicen "1/2/3/4".
         self.tf_aliases_nivel = ft.TextField(
             label="Sinónimos de nivel (alias=nivel, coma)", width=420, dense=True,
@@ -633,14 +642,17 @@ class App:
                           on_click=lambda e: self._editar_requisito_nivel()),
             ft.Divider(),
             ft.Text("Límites de OPERACIÓN por nivel (montos)", weight=ft.FontWeight.BOLD),
-            ft.Text("Designa los campos de operación y los valores de abono/efectivo; "
-                    "luego agrega los topes por nivel. Abonos se evalúan en UDIS, efectivo "
-                    "en USD y en MXN, saldo en UDIS (requiere cargar ambos archivos de "
-                    "tasas al validar). 'Tipo persona' admite también 'fisica_ae' (física "
-                    "con actividad empresarial) y 'fideicomiso'.",
+            ft.Text("Designa los campos de operación y los valores de abono/efectivo/"
+                    "cheque de caja/moneda; luego agrega los topes por nivel. Abonos se "
+                    "evalúan en UDIS, efectivo en USD y en MXN, saldo en UDIS (requiere "
+                    "cargar ambos archivos de tasas al validar). El campo 'Moneda' es "
+                    "opcional: si una fila ya declara moneda de dólares, su monto se usa "
+                    "tal cual (sin convertir). 'Tipo persona' admite también 'fisica_ae' "
+                    "(física con actividad empresarial) y 'fideicomiso'.",
                     size=11, color=ft.Colors.GREY_700),
             ft.Row(list(self.op_dd.values()), wrap=True),
-            ft.Row([self.tf_abono, self.tf_efectivo], wrap=True),
+            ft.Row([self.tf_abono, self.tf_efectivo, self.tf_cheque_caja, self.tf_moneda_usd],
+                  wrap=True),
             self.lista_limites,
             ft.TextButton("Agregar límite de operación", icon=ft.Icons.ADD,
                           on_click=lambda e: self._editar_limite_op()),
@@ -763,6 +775,7 @@ class App:
                                   options=[ft.dropdown.Option(c) for c in [
                                       "abono_mensual", "efectivo_usd", "efectivo_mensual_mxn",
                                       "efectivo_individual_mxn", "operacion_relevante_usd",
+                                      "efectivo_abono_usd_individual", "cheque_caja_usd",
                                       "saldo_udis"]])
         dd_nivel = ft.Dropdown(label="Nivel", width=120, value="todos",
                                options=[ft.dropdown.Option(n) for n in
@@ -797,12 +810,17 @@ class App:
             content=ft.Container(width=520, content=ft.Column(
                 [ft.Row([dd_concepto, dd_nivel, dd_tipo], wrap=True), tf_limite,
                  ft.Text("abono_mensual: tope de abonos del mes en UDIS.\n"
-                         "efectivo_usd: tope de efectivo del mes en USD (0 = prohibido).\n"
+                         "efectivo_usd: tope de ABONOS en efectivo del mes en USD (>= al "
+                         "valor indicado; 0 = prohibido).\n"
                          "efectivo_mensual_mxn: tope de efectivo del mes en MXN (sin conversión).\n"
                          "efectivo_individual_mxn: tope por movimiento de abono/depósito en "
                          "efectivo, en MXN (sin conversión).\n"
                          "operacion_relevante_usd: marca cargos o abonos en efectivo cuyo "
                          "equivalente en USD sea >= al valor indicado.\n"
+                         "efectivo_abono_usd_individual: abono en efectivo cuya moneda ya es "
+                         "dólares (sin conversión), monto individual >= al valor indicado.\n"
+                         "cheque_caja_usd: cargo o abono con instrumento 'cheque de caja' "
+                         "(convertido a USD si hace falta) >= al valor indicado.\n"
                          "saldo_udis: tope de saldo de cuenta en UDIS.",
                          size=11, color=ft.Colors.GREY_700)], tight=True)),
             actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(dlg)),
@@ -866,7 +884,9 @@ class App:
                             aliases_nivel=aliases_nivel,
                             limites_operacion=self.limites_op, op_campos=op_campos,
                             op_valores_abono=_csv(self.tf_abono.value),
-                            op_valores_efectivo=_csv(self.tf_efectivo.value))
+                            op_valores_efectivo=_csv(self.tf_efectivo.value),
+                            op_valores_cheque_caja=_csv(self.tf_cheque_caja.value),
+                            op_valores_moneda_usd=_csv(self.tf_moneda_usd.value))
         try:
             guardar_entidad(cfg)
         except ValueError as ex:
@@ -912,6 +932,12 @@ class App:
                                      value=", ".join(cfg["valores_abono"]))
         self.tf_efectivo = ft.TextField(label="Valores de EFECTIVO (coma)", width=300, dense=True,
                                         value=", ".join(cfg["valores_efectivo"]))
+        self.tf_cheque_caja = ft.TextField(
+            label="Valores de CHEQUE DE CAJA (coma)", width=300, dense=True,
+            value=", ".join(cfg["valores_cheque_caja"]))
+        self.tf_moneda_usd = ft.TextField(
+            label="Valores de moneda = DOLARES (coma)", width=300, dense=True,
+            value=", ".join(cfg["valores_moneda_usd"]))
 
         vcfg = cfg["validator_config"]
         deshabilitados = set(vcfg.get("checks_deshabilitados") or [])
@@ -959,6 +985,8 @@ class App:
                 "limites_operacion": [l.to_dict() for l in self.limites_op],
                 "valores_abono": _csv(self.tf_abono.value),
                 "valores_efectivo": _csv(self.tf_efectivo.value),
+                "valores_cheque_caja": _csv(self.tf_cheque_caja.value),
+                "valores_moneda_usd": _csv(self.tf_moneda_usd.value),
                 "validator_config": nuevo_vcfg,
             }
             registro.guardar_config_banco(data)
@@ -981,7 +1009,8 @@ class App:
                           on_click=lambda e: self._editar_requisito_nivel()),
             ft.Divider(),
             ft.Text("Limites de OPERACION por nivel (montos)", weight=ft.FontWeight.BOLD),
-            ft.Row([self.tf_abono, self.tf_efectivo], wrap=True),
+            ft.Row([self.tf_abono, self.tf_efectivo, self.tf_cheque_caja, self.tf_moneda_usd],
+                  wrap=True),
             self.lista_limites,
             ft.TextButton("Agregar limite de operacion", icon=ft.Icons.ADD,
                           on_click=lambda e: self._editar_limite_op()),

@@ -112,6 +112,10 @@ class EntidadConfig:
     op_campos: dict[str, str] = field(default_factory=dict)
     op_valores_abono: list[str] = field(default_factory=list)
     op_valores_efectivo: list[str] = field(default_factory=list)
+    # Instrumento 'cheque de caja' (separado de efectivo) y valores de la
+    # columna 'moneda' (rol "moneda" en op_campos) que indican dólares.
+    op_valores_cheque_caja: list[str] = field(default_factory=list)
+    op_valores_moneda_usd: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -128,6 +132,8 @@ class EntidadConfig:
             "op_campos": dict(self.op_campos),
             "op_valores_abono": list(self.op_valores_abono),
             "op_valores_efectivo": list(self.op_valores_efectivo),
+            "op_valores_cheque_caja": list(self.op_valores_cheque_caja),
+            "op_valores_moneda_usd": list(self.op_valores_moneda_usd),
         }
 
     @classmethod
@@ -146,4 +152,6 @@ class EntidadConfig:
             op_campos=dict(d.get("op_campos", {})),
             op_valores_abono=list(d.get("op_valores_abono", [])),
             op_valores_efectivo=list(d.get("op_valores_efectivo", [])),
+            op_valores_cheque_caja=list(d.get("op_valores_cheque_caja", [])),
+            op_valores_moneda_usd=list(d.get("op_valores_moneda_usd", [])),
         )

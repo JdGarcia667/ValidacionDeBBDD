@@ -88,6 +88,8 @@ class EntidadConfigurable(ValidadorEntidad):
             df, mapeo, self.config.limites_operacion, campos=self.config.op_campos,
             valores_abono=self.config.op_valores_abono,
             valores_efectivo=self.config.op_valores_efectivo,
+            valores_cheque_caja=self.config.op_valores_cheque_caja,
+            valores_moneda_usd=self.config.op_valores_moneda_usd,
             archivo_udis=config.get("archivo_udis"), mapeo_udis=config.get("mapeo_udis"),
             archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"),
             aliases_nivel=construir_aliases_nivel(self.config.aliases_nivel))
