@@ -1,0 +1,8 @@
+# Empaquetado (flet pack / PyInstaller)
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc

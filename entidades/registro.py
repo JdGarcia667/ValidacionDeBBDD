@@ -7,13 +7,28 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 
 from .base import ValidadorEntidad
 from .banco import BancoValidador
 from .configurable import EntidadConfigurable
 from .modelo import EntidadConfig
 
-DIR_USUARIO = os.path.join(os.path.dirname(__file__), "usuario")
+
+def _dir_usuario() -> str:
+    """Carpeta donde se guardan las entidades del usuario (JSON) y el override
+    de Banco. En desarrollo, junto al código (entidades/usuario/), igual que
+    siempre. Empaquetada con PyInstaller (`flet pack`), `__file__` apunta a una
+    carpeta temporal que se recrea/descarta en cada arranque — ahí se perdería
+    todo lo guardado. En ese caso se usa una carpeta persistente del usuario
+    (%APPDATA% en Windows, ~/.validaciondebbdd en otros sistemas)."""
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "ValidacionDeBBDD", "usuario")
+    return os.path.join(os.path.dirname(__file__), "usuario")
+
+
+DIR_USUARIO = _dir_usuario()
 # Archivo especial de overrides de Banco (no es una entidad seleccionable: no
 # lleva clave "nombre" y su archivo empieza con "_", excluido explícitamente
 # en listar_entidades()).

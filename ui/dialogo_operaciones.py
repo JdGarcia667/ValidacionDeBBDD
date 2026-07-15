@@ -8,6 +8,8 @@ from __future__ import annotations
 import flet as ft
 import pandas as pd
 
+from ui.tema import AMBAR, TEXTO_MUTED
+
 
 class ConfigOperacionesDialog:
     def __init__(self, page: ft.Page, al_confirmar, requiere_tasas: bool = False):
@@ -51,8 +53,8 @@ class ConfigOperacionesDialog:
         self.val_filtro = ft.TextField(label="Monto", width=140)
         self.lista_filtros = ft.Column(spacing=2)
 
-        self.udis_status = ft.Text("", size=11, color=ft.Colors.GREY_700)
-        self.tc_status = ft.Text("", size=11, color=ft.Colors.GREY_700)
+        self.udis_status = ft.Text("", size=11, color=TEXTO_MUTED)
+        self.tc_status = ft.Text("", size=11, color=TEXTO_MUTED)
         self.fila_udis = ft.Row([
             ft.ElevatedButton("Archivo UDIS", icon=ft.Icons.UPLOAD_FILE,
                               on_click=lambda e: self.page.run_task(self._cargar_tasa, "udis")),
@@ -68,7 +70,7 @@ class ConfigOperacionesDialog:
         nota_tasas = ft.Text(
             "Esta entidad valida límites por nivel: carga el archivo de UDIS (para "
             "abonos) y el de tipo de cambio (para efectivo en USD).",
-            size=11, italic=True, color=ft.Colors.BLUE_700,
+            size=11, italic=True, color=AMBAR,
             visible=self.requiere_tasas)
 
         contenido = ft.Container(width=560, content=ft.Column([
@@ -81,7 +83,7 @@ class ConfigOperacionesDialog:
             ft.Divider(),
             ft.Text("Filtros de monto (sobre el total agrupado)", weight=ft.FontWeight.BOLD),
             ft.Text("Sin filtros no se generan hallazgos de operaciones.",
-                    size=11, italic=True, color=ft.Colors.GREY_700),
+                    size=11, italic=True, color=TEXTO_MUTED),
             ft.Row([self.op_filtro, self.val_filtro,
                     ft.IconButton(ft.Icons.ADD_CIRCLE, on_click=lambda e: self._agregar_filtro())]),
             self.lista_filtros,

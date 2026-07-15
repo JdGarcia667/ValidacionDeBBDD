@@ -30,6 +30,7 @@ from entidades.reglas import CATALOGO
 from core.report_generator import ReportGenerator
 from core import multi_loader as ml
 from ui.dialogo_operaciones import ConfigOperacionesDialog
+from ui.tema import AMBAR, TEXTO_MUTED, BORDE, aplicar_tema
 
 NO_MAPEAR = "(no mapear)"
 
@@ -45,7 +46,7 @@ class App:
     def __init__(self, page: ft.Page):
         self.page = page
         page.title = "Validacion de BBDD"
-        page.theme_mode = ft.ThemeMode.LIGHT
+        aplicar_tema(page)
         page.padding = 18
 
         self.entidad = None
@@ -114,12 +115,12 @@ class App:
                             on_click=lambda e: self._abrir_constructor()),
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-        self.txt_cli = ft.Text("Sin archivo", size=12, color=ft.Colors.GREY_700)
-        self.txt_ops = ft.Text("Sin archivo", size=12, color=ft.Colors.GREY_700)
+        self.txt_cli = ft.Text("Sin archivo", size=12, color=TEXTO_MUTED)
+        self.txt_ops = ft.Text("Sin archivo", size=12, color=TEXTO_MUTED)
 
         # Bordes con ft.Border.all (B mayúscula)
         col_cli = ft.Container(expand=1, padding=12,
-                                border=ft.Border.all(1, ft.Colors.GREY_300),
+                                border=ft.Border.all(1, BORDE),
                                 border_radius=8, content=ft.Column([
                 ft.Row([ft.Icon(ft.Icons.PEOPLE_OUTLINE), ft.Text("Clientes", weight=ft.FontWeight.BOLD)]),
                 ft.Row([ft.ElevatedButton("Cargar clientes", icon=ft.Icons.UPLOAD_FILE,
@@ -129,7 +130,7 @@ class App:
                 ft.Container(self.panel_map_cli, height=260, padding=4),
             ]))
         col_ops = ft.Container(expand=1, padding=12,
-                                border=ft.Border.all(1, ft.Colors.GREY_300),
+                                border=ft.Border.all(1, BORDE),
                                 border_radius=8, content=ft.Column([
                 ft.Row([ft.Icon(ft.Icons.SWAP_HORIZ), ft.Text("Operaciones", weight=ft.FontWeight.BOLD)]),
                 ft.Row([ft.ElevatedButton("Cargar operaciones", icon=ft.Icons.UPLOAD_FILE,
@@ -155,7 +156,7 @@ class App:
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         # Progreso en vivo (carga/validación en segundo plano).
-        self.txt_progreso = ft.Text("", size=12, visible=False, color=ft.Colors.BLUE_700)
+        self.txt_progreso = ft.Text("", size=12, visible=False, color=AMBAR)
         self.prog_bar = ft.ProgressBar(visible=False)
         progreso = ft.Column([self.txt_progreso, self.prog_bar], spacing=4)
 
@@ -169,7 +170,7 @@ class App:
         # altura fija del contenedor de resultados.
         self.tabla = ft.Column(scroll=ft.ScrollMode.ALWAYS, expand=True)
         resultados = ft.Container(padding=12,
-                                  border=ft.Border.all(1, ft.Colors.GREY_300),
+                                  border=ft.Border.all(1, BORDE),
                                   border_radius=8, content=ft.Column([
                 ft.Text("Resultados", weight=ft.FontWeight.BOLD),
                 self.resumen, self.dd_hoja,
@@ -324,7 +325,7 @@ class App:
         campos = self.entidad.campos_cliente() if cual == "cli" else self.entidad.campos_operacion()
         if not campos:
             panel.controls.append(ft.Text("Esta entidad no valida este tipo.", italic=True,
-                                          size=12, color=ft.Colors.GREY_700))
+                                          size=12, color=TEXTO_MUTED))
             return
         columnas = list(df.columns) if df is not None else []
         sugerido = auto_mapear(columnas, campos) if columnas else {c: None for c in campos}
@@ -481,20 +482,23 @@ class App:
         self.tabla.controls.clear()
         if not self.hallazgos:
             self.resumen.controls.append(
-                ft.Container(ft.Text("Sin hallazgos ✓", color=ft.Colors.GREEN_800),
-                             bgcolor=ft.Colors.GREEN_50, padding=8, border_radius=6))
+                ft.Container(ft.Text("Sin hallazgos ✓", color=ft.Colors.GREEN_300),
+                             bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREEN),
+                             padding=8, border_radius=6))
             self.dd_hoja.visible = False
             self.page.update()
             return
         total = sum(len(v) for v in self.hallazgos.values())
         self.resumen.controls.append(
             ft.Container(ft.Text(f"{total} hallazgos", weight=ft.FontWeight.BOLD,
-                                 color=ft.Colors.RED_800),
-                         bgcolor=ft.Colors.RED_50, padding=8, border_radius=6))
+                                 color=ft.Colors.RED_300),
+                         bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.RED),
+                         padding=8, border_radius=6))
         for nombre, df in self.hallazgos.items():
             self.resumen.controls.append(
-                ft.Container(ft.Text(f"{nombre}: {len(df)}", size=12),
-                             bgcolor=ft.Colors.BLUE_50, padding=8, border_radius=6))
+                ft.Container(ft.Text(f"{nombre}: {len(df)}", size=12, color="#FFFFFF"),
+                             bgcolor=ft.Colors.with_opacity(0.12, AMBAR),
+                             padding=8, border_radius=6))
         self.dd_hoja.options = [ft.dropdown.Option(n) for n in self.hallazgos]
         self.dd_hoja.value = next(iter(self.hallazgos))
         self.dd_hoja.visible = True
@@ -631,11 +635,11 @@ class App:
             ft.Divider(),
             ft.Text("Requisitos por NIVEL DE CUENTA (clientes)", weight=ft.FontWeight.BOLD),
             ft.Text("Indica qué campos llevan el nivel/tipo/modalidad y agrega, por nivel, "
-                    "los campos que deben venir llenos.", size=11, color=ft.Colors.GREY_700),
+                    "los campos que deben venir llenos.", size=11, color=TEXTO_MUTED),
             ft.Row([self.dd_campo_nivel, self.dd_campo_tipo, self.dd_campo_modalidad], wrap=True),
             ft.Text("Si la columna de nivel no dice '1/2/3/4', mapea sus valores "
                     "(Tradicional→4, Limitada→3L y Limitada 4→4L ya se reconocen):",
-                    size=11, color=ft.Colors.GREY_700),
+                    size=11, color=TEXTO_MUTED),
             self.tf_aliases_nivel,
             self.lista_niveles,
             ft.TextButton("Agregar requisito de nivel", icon=ft.Icons.ADD,
@@ -649,7 +653,7 @@ class App:
                     "opcional: si una fila ya declara moneda de dólares, su monto se usa "
                     "tal cual (sin convertir). 'Tipo persona' admite también 'fisica_ae' "
                     "(física con actividad empresarial) y 'fideicomiso'.",
-                    size=11, color=ft.Colors.GREY_700),
+                    size=11, color=TEXTO_MUTED),
             ft.Row(list(self.op_dd.values()), wrap=True),
             ft.Row([self.tf_abono, self.tf_efectivo, self.tf_cheque_caja, self.tf_moneda_usd],
                   wrap=True),
@@ -822,7 +826,7 @@ class App:
                          "cheque_caja_usd: cargo o abono con instrumento 'cheque de caja' "
                          "(convertido a USD si hace falta) >= al valor indicado.\n"
                          "saldo_udis: tope de saldo de cuenta en UDIS.",
-                         size=11, color=ft.Colors.GREY_700)], tight=True)),
+                         size=11, color=TEXTO_MUTED)], tight=True)),
             actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(dlg)),
                      ft.FilledButton("Agregar", on_click=aceptar)])
         self._abrir(dlg)
@@ -1018,7 +1022,7 @@ class App:
             ft.Text("Parametros de validacion de clientes", weight=ft.FontWeight.BOLD),
             ft.Row(param_rows, wrap=True),
             ft.Text("Validaciones activas (desmarca para desactivar una validacion):",
-                    size=11, color=ft.Colors.GREY_700),
+                    size=11, color=TEXTO_MUTED),
             ft.Text("Por campo:", size=12, weight=ft.FontWeight.BOLD),
             ft.Column(list(checks_campo_boxes.values()), spacing=0),
             ft.Text("Generales:", size=12, weight=ft.FontWeight.BOLD),
