@@ -13,11 +13,25 @@ import sqlite3
 
 import pandas as pd
 
+from core.validator_operaciones import ValidatorOperaciones
+from core.sqlite_validator_operaciones import SQLiteValidatorOperaciones
 from .base import ValidadorEntidad
 from .modelo import EntidadConfig, CampoConfig
 from .reglas import CATALOGO, Contexto, construir
 
 COLS = ["fila", "id", "campo", "columna", "valor", "Tipo_Error"]
+
+# Roles de campo de operación (fecha/monto/cuenta/...) -> nombre lógico FIJO,
+# en el mismo espacio de claves que esperan ValidatorOperaciones/
+# LimitesOperaciones (idéntico al CAMPOS_LIMITES de Banco). El mapeo real
+# (lógico arbitrario -> columna) se traduce a este espacio antes de invocar
+# esos motores, para poder reutilizarlos tal cual sin reimplementarlos.
+_ROLES_A_CLAVE = {
+    "fecha": "fecha_operacion", "monto": "monto", "cuenta": "id_cuenta",
+    "cliente": "id_cliente", "nivel": "nivel_cuenta", "tipo_persona": "tipo de persona",
+    "tipo_operacion": "tipo_operacion", "instrumento": "instrumento_monetario",
+    "saldo": "saldo", "moneda": "moneda_operacion",
+}
 
 
 def _q(nombre: str) -> str:
@@ -25,20 +39,35 @@ def _q(nombre: str) -> str:
     return '"' + str(nombre).replace('"', '""') + '"'
 
 
+def _regla_de_ambito(campo: CampoConfig, ambito: str) -> "ReglaConfig | None":
+    return next((r for r in campo.reglas if CATALOGO[r.id].ambito == ambito), None)
+
+
 def _tiene_unico(campo: CampoConfig) -> bool:
-    return any(CATALOGO[r.id].ambito == "columna" and r.id == "unico"
-               for r in campo.reglas)
+    return _regla_de_ambito(campo, "columna") is not None
+
+
+def _regla_relacion(campo: CampoConfig):
+    """Regla de ambito 'relacion' del campo (p. ej. 'mismo_valor_en'), o None."""
+    return _regla_de_ambito(campo, "relacion")
 
 
 class EntidadConfigurable(ValidadorEntidad):
     requiere_tipo_persona = False
-    requiere_config_operaciones = False
 
     def __init__(self, config: EntidadConfig):
         self.config = config
         self.nombre = config.nombre
         self.descripcion = config.descripcion
         self.es_builtin = False
+
+    @property
+    def requiere_config_operaciones(self) -> bool:
+        # Se necesita el diálogo de configuración (moneda/agrupación/filtros y,
+        # si aplica, archivos de tasas UDIS/tipo de cambio) tanto si la entidad
+        # define límites de operación por nivel como si se activaron los
+        # filtros de monto con operador libre (estilo Banco).
+        return bool(self.tiene_limites_operacion() or self.config.op_filtros_habilitado)
 
     def campos_cliente(self) -> list[str]:
         return [c.logico for c in self.config.campos_cliente]
@@ -56,8 +85,15 @@ class EntidadConfigurable(ValidadorEntidad):
         return self._validar(df, mapeo, self.config.campos_cliente, "id_cliente")
 
     def validar_operaciones(self, df, mapeo, config=None) -> dict:
+        config = config or {}
         res = self._validar(df, mapeo, self.config.campos_operacion, "id_operacion")
-        res.update(self._limites_memoria(df, mapeo, config or {}))
+        mapeo_generico = self._mapeo_operaciones_generico(mapeo)
+        if self.config.op_filtros_habilitado:
+            errores_vo, _ = ValidatorOperaciones(df, mapeo_generico, config).validar_todo()
+            res.update(errores_vo)
+        lim = self._limites_validador(df, mapeo_generico, config)
+        if lim is not None:
+            res.update(lim.validar())
         return res
 
     # ------------------------------------------------------------------ #
@@ -70,22 +106,45 @@ class EntidadConfigurable(ValidadorEntidad):
 
     def validar_operaciones_sqlite(self, db_path, mapeo, config=None,
                                    progreso=None) -> dict:
+        config = config or {}
         res = self._validar_sqlite(db_path, mapeo, self.config.campos_operacion,
                                    "id_operacion", progreso)
-        res.update(self._limites_sqlite(db_path, mapeo, config or {}, progreso))
+        mapeo_generico = self._mapeo_operaciones_generico(mapeo)
+        if self.config.op_filtros_habilitado:
+            # Motor combinado (filtros de monto + límites, si los hay): mismo
+            # camino genérico que usa Banco, sin reimplementar la re-agregación
+            # por lotes.
+            limites_kwargs = self._limites_kwargs(config) if self.tiene_limites_operacion() else None
+            errores, _ = SQLiteValidatorOperaciones(
+                db_path, mapeo_generico, config, progreso=progreso,
+                limites_kwargs=limites_kwargs).validar_todo()
+            res.update(errores)
+        else:
+            res.update(self._limites_sqlite(db_path, mapeo, config, progreso))
         return res
+
+    # ------------------------------------------------------------------ #
+    # Traducción de roles de campo de operación al espacio de claves fijas
+    # ------------------------------------------------------------------ #
+    def _mapeo_operaciones_generico(self, mapeo: dict) -> dict:
+        """Combina self.config.op_campos (rol -> lógico) con mapeo (lógico ->
+        columna real) para producir el mapeo en el espacio de claves fijas
+        (_ROLES_A_CLAVE) que esperan ValidatorOperaciones/LimitesOperaciones."""
+        out = {}
+        for rol, clave in _ROLES_A_CLAVE.items():
+            logico = self.config.op_campos.get(rol)
+            col = mapeo.get(logico) if logico else None
+            if col:
+                out[clave] = col
+        return out
 
     # ------------------------------------------------------------------ #
     # Límites de operación por nivel (montos)
     # ------------------------------------------------------------------ #
-    def _limites_validador(self, df, mapeo, config):
-        """Construye el validador de límites si la entidad los define; si no, None."""
-        if not self.config.limites_operacion or not self.config.op_campos:
-            return None
-        from core.limites_operaciones import LimitesOperaciones
+    def _limites_kwargs(self, config) -> dict:
         from core.niveles import construir_aliases_nivel
-        return LimitesOperaciones(
-            df, mapeo, self.config.limites_operacion, campos=self.config.op_campos,
+        return dict(
+            limites=self.config.limites_operacion, campos=_ROLES_A_CLAVE,
             valores_abono=self.config.op_valores_abono,
             valores_efectivo=self.config.op_valores_efectivo,
             valores_cheque_caja=self.config.op_valores_cheque_caja,
@@ -94,12 +153,15 @@ class EntidadConfigurable(ValidadorEntidad):
             archivo_tc=config.get("archivo_tc"), mapeo_tc=config.get("mapeo_tc"),
             aliases_nivel=construir_aliases_nivel(self.config.aliases_nivel))
 
-    def _limites_memoria(self, df, mapeo, config) -> dict:
-        lim = self._limites_validador(df, mapeo, config)
-        return lim.validar() if lim is not None else {}
+    def _limites_validador(self, df, mapeo_generico, config):
+        """Construye el validador de límites si la entidad los define; si no, None."""
+        if not self.config.limites_operacion or not self.config.op_campos:
+            return None
+        from core.limites_operaciones import LimitesOperaciones
+        return LimitesOperaciones(df, mapeo_generico, **self._limites_kwargs(config))
 
     def _limites_sqlite(self, db_path, mapeo, config, progreso) -> dict:
-        lim = self._limites_validador(None, mapeo, config)
+        lim = self._limites_validador(None, self._mapeo_operaciones_generico(mapeo), config)
         if lim is None:
             return {}
         from core.multi_loader import iter_chunks
@@ -134,6 +196,7 @@ class EntidadConfigurable(ValidadorEntidad):
         hallazgos += self._faltantes(df, mapeo, campos)
         hallazgos += self._hallazgos_valor(df, mapeo, campos, id_col)
         hallazgos += self._hallazgos_unico_memoria(df, mapeo, campos, id_col)
+        hallazgos += self._hallazgos_relacion_memoria(df, mapeo, campos, id_col)
         if id_logico == "id_cliente":
             hallazgos += self._hallazgos_niveles(df, mapeo)
         if not hallazgos:
@@ -161,6 +224,11 @@ class EntidadConfigurable(ValidadorEntidad):
             if progreso:
                 progreso("Buscando duplicados en todo el conjunto...")
             hallazgos += self._duplicados_sqlite(db_path, mapeo, campos, id_col)
+        # Consistencia ('mismo_valor_en'): global, vía SQL.
+        if any(_regla_relacion(c) is not None for c in campos):
+            if progreso:
+                progreso("Buscando inconsistencias en todo el conjunto...")
+            hallazgos += self._relacion_sqlite(db_path, mapeo, campos, id_col)
         if not hallazgos:
             return {}
         return {"Hallazgos": pd.DataFrame(hallazgos, columns=COLS)}
@@ -249,6 +317,52 @@ class EntidadConfigurable(ValidadorEntidad):
             conn.close()
         return out
 
+    def _hallazgos_relacion_memoria(self, df, mapeo, campos, id_col) -> list[dict]:
+        out = []
+        for campo in campos:
+            regla = _regla_relacion(campo)
+            if regla is None:
+                continue
+            col = mapeo.get(campo.logico)
+            campo_ref = regla.parametros.get("campo_referencia")
+            col_ref = mapeo.get(campo_ref) if campo_ref else None
+            if not col or col not in df.columns or not col_ref or col_ref not in df.columns:
+                continue
+            out.extend(_inconsistencias(df, col, col_ref, campo.logico, campo_ref, id_col))
+        return out
+
+    def _relacion_sqlite(self, db_path, mapeo, campos, id_col) -> list[dict]:
+        from core.multi_loader import TABLA
+        out = []
+        conn = sqlite3.connect(db_path)
+        try:
+            for campo in campos:
+                regla = _regla_relacion(campo)
+                if regla is None:
+                    continue
+                col = mapeo.get(campo.logico)
+                campo_ref = regla.parametros.get("campo_referencia")
+                col_ref = mapeo.get(campo_ref) if campo_ref else None
+                if not col or not col_ref:
+                    continue
+                qcol, qref = _q(col), _q(col_ref)
+                valido = (f"TRIM({qcol}) <> '' AND "
+                          f"LOWER(TRIM({qcol})) NOT IN ('nan','none','null')")
+                sel_id = f", {_q(id_col)}" if id_col else ""
+                q = (f"SELECT rowid, {qcol}{sel_id} FROM {TABLA} "
+                     f"WHERE {valido} AND UPPER(TRIM({qcol})) IN "
+                     f"(SELECT UPPER(TRIM({qcol})) FROM {TABLA} WHERE {valido} "
+                     f" GROUP BY UPPER(TRIM({qcol})) "
+                     f" HAVING COUNT(DISTINCT UPPER(TRIM({qref}))) > 1)")
+                for r in conn.execute(q).fetchall():
+                    rowid, valor = r[0], r[1]
+                    idv = r[2] if id_col else (rowid - 1)
+                    out.append(_h(rowid + 1, idv, campo.logico, col, valor,
+                                  f"{campo.logico} repetido con distinto valor en {campo_ref}"))
+        finally:
+            conn.close()
+        return out
+
 
 def _fila(idx):
     try:
@@ -272,4 +386,24 @@ def _duplicados(df, col, campo_logico, id_col) -> list[dict]:
         idv = df.loc[idx, id_col] if id_col and id_col in df.columns else idx
         out.append(_h(_fila(idx), idv, campo_logico, col, df.loc[idx, col],
                       f"{campo_logico} duplicado"))
+    return out
+
+
+def _inconsistencias(df, col, col_ref, campo_logico, campo_ref_logico, id_col) -> list[dict]:
+    """Filas cuyo valor en `col` se repite pero con distinto valor en `col_ref`
+    (p. ej. mismo CURP con nombre diferente). Comparación case-insensitive."""
+    if col is None or col not in df.columns or col_ref is None or col_ref not in df.columns:
+        return []
+    clave = df[col].astype(str).str.strip().str.upper()
+    valido = ~clave.str.lower().isin(["", "nan", "none", "null"])
+    ref = df[col_ref].astype(str).str.strip().str.upper()
+    sub = pd.DataFrame({"_clave": clave, "_ref": ref}, index=df.index)[valido]
+    grupos = sub.groupby("_clave")["_ref"].nunique()
+    claves_malas = set(grupos[grupos > 1].index)
+    idx = sub.index[sub["_clave"].isin(claves_malas)]
+    out = []
+    for i in idx:
+        idv = df.loc[i, id_col] if id_col and id_col in df.columns else i
+        out.append(_h(_fila(i), idv, campo_logico, col, df.loc[i, col],
+                      f"{campo_logico} repetido con distinto valor en {campo_ref_logico}"))
     return out

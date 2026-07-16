@@ -44,6 +44,41 @@ def es_vacio(v: Any) -> bool:
     return str(v).strip().lower() in ("", "nan", "none", "null")
 
 
+# ---------------------- condiciones de aplicacion ---------------------- #
+# 'aplica si [campo] [operador] [valor]'. `campo` es el nombre logico de OTRO
+# campo de la misma entidad (se resuelve con Contexto.get). Combinables (AND)
+# vía ReglaConfig.condiciones; ReglaConfig.condiciones_negar niega el AND
+# completo (De Morgan), para expresar "aplica salvo que se cumplan TODAS".
+OPERADORES_CONDICION = [
+    "=", "!=", "contiene", "no_contiene", "vacio", "no_vacio", "en_lista", "no_en_lista",
+]
+
+
+def _evaluar_condicion(valor, operador: str, referencia: str) -> bool:
+    if operador == "vacio":
+        return es_vacio(valor)
+    if operador == "no_vacio":
+        return not es_vacio(valor)
+    v = "" if es_vacio(valor) else _norm(valor)
+    if operador == "=":
+        return v == _norm(referencia)
+    if operador == "!=":
+        return v != _norm(referencia)
+    if operador == "contiene":
+        return _norm(referencia) in v
+    if operador == "no_contiene":
+        return _norm(referencia) not in v
+    if operador in ("en_lista", "no_en_lista"):
+        opciones = {_norm(o) for o in str(referencia or "").split(",") if o.strip()}
+        pertenece = v in opciones
+        return pertenece if operador == "en_lista" else not pertenece
+    return True
+
+
+def _condiciones_cumplen(condiciones, ctx: "Contexto") -> bool:
+    return all(_evaluar_condicion(ctx.get(c.campo), c.operador, c.valor) for c in condiciones)
+
+
 def parse_fecha(valor):
     import warnings
     with warnings.catch_warnings():
@@ -204,6 +239,83 @@ def r_fecha_valida() -> Regla:
     return f
 
 
+def r_fecha_no_futura() -> Regla:
+    def f(valor, ctx):
+        if es_vacio(valor):
+            return None
+        fecha = parse_fecha(valor)
+        if pd.isna(fecha):
+            return None  # cubierto por fecha_valida
+        if fecha.date() > date.today():
+            return "Fecha futura"
+        return None
+    return f
+
+
+def r_fecha_no_anterior_a(campo_referencia: str) -> Regla:
+    def f(valor, ctx):
+        if es_vacio(valor):
+            return None
+        fecha = parse_fecha(valor)
+        if pd.isna(fecha):
+            return None  # cubierto por fecha_valida
+        ref = ctx.get(campo_referencia)
+        if es_vacio(ref):
+            return None
+        fecha_ref = parse_fecha(ref)
+        if pd.isna(fecha_ref):
+            return None
+        if fecha < fecha_ref:
+            return f"Anterior a '{campo_referencia}'"
+        return None
+    return f
+
+
+def r_debe_estar_vacio() -> Regla:
+    """Opuesto de 'no_vacio'. Util combinada con una condicion, p. ej. 'fecha de
+    termino debe estar vacia si el estatus contiene activo'."""
+    def f(valor, ctx):
+        return None if es_vacio(valor) else "Debe estar vacio"
+    return f
+
+
+def r_al_menos_uno_de(campos: list = None) -> Regla:
+    """Error si el valor propio Y todos los campos listados (otros campos
+    logicos, via ctx) estan vacios. Util para pares tipo 'actividad generica /
+    actividad especifica' donde basta con que uno de los dos venga lleno."""
+    campos = campos or []
+    def f(valor, ctx):
+        if not es_vacio(valor):
+            return None
+        if all(es_vacio(ctx.get(c)) for c in campos):
+            return "Vacio: se requiere al menos uno de (" + ", ".join(campos) + ")"
+        return None
+    return f
+
+
+def r_direccion_completa(campos_obligatorios: list = None,
+                          campos_ciudad_alcaldia: list = None) -> Regla:
+    """Domicilio dividido en varias columnas: exige que el campo propio y cada
+    uno de `campos_obligatorios` (otros campos logicos, via ctx) esten llenos;
+    si se listan `campos_ciudad_alcaldia`, exige que al menos uno de ellos
+    tambien lo este (p. ej. ciudad O alcaldia/municipio)."""
+    campos_obligatorios = campos_obligatorios or []
+    campos_ciudad_alcaldia = campos_ciudad_alcaldia or []
+    def f(valor, ctx):
+        problemas = []
+        if es_vacio(valor):
+            problemas.append("este campo")
+        for c in campos_obligatorios:
+            if es_vacio(ctx.get(c)):
+                problemas.append(c)
+        if campos_ciudad_alcaldia and all(es_vacio(ctx.get(c)) for c in campos_ciudad_alcaldia):
+            problemas.append("uno de (" + ", ".join(campos_ciudad_alcaldia) + ")")
+        if problemas:
+            return "Domicilio incompleto, falta: " + ", ".join(problemas)
+        return None
+    return f
+
+
 def r_valor_en(opciones: list = None, normalizar: bool = True) -> Regla:
     opciones = opciones or []
     permitidos = {_norm(o) if normalizar else str(o) for o in opciones}
@@ -239,20 +351,26 @@ def r_curp() -> Regla:
     return f
 
 
-def r_rfc() -> Regla:
+def r_rfc(tipo_persona: str = "fisica") -> Regla:
+    """RFC fisica (13: 4 letras) o moral (12: 3 letras). Sin parametro se
+    comporta igual que antes (fisica), retrocompatible con configs guardadas."""
+    moral = str(tipo_persona).strip().lower() == "moral"
+    longitud = 12 if moral else 13
+    n_letras = 3 if moral else 4
+    fin_fecha = n_letras + 6
     def f(valor, ctx):
         rfc = str(valor).strip().upper()
         if rfc in ("NAN", "", "NONE", "NULL"):
             return "RFC faltante"
         errores = []
-        if len(rfc) != 13:
-            errores.append(f"Longitud incorrecta: {len(rfc)} caracteres")
-        if len(rfc) >= 4 and not re.match(r"^[A-Z]{4}", rfc):
-            errores.append("Primeros 4 caracteres no son letras")
-        if len(rfc) >= 10 and not re.match(r"^[0-9]{6}", rfc[4:10]):
-            errores.append("Caracteres 5 al 10 no son numeros")
-        if len(rfc) == 13 and not re.match(r"^[A-Z0-9]{3}$", rfc[10:]):
-            errores.append("Ultimos 3 caracteres no son alfanumericos")
+        if len(rfc) != longitud:
+            errores.append(f"Longitud incorrecta: {len(rfc)} caracteres (esperado {longitud})")
+        if len(rfc) >= n_letras and not re.match(r"^[A-Z]{%d}" % n_letras, rfc):
+            errores.append(f"Primeros {n_letras} caracteres no son letras")
+        if len(rfc) >= fin_fecha and not re.match(r"^[0-9]{6}$", rfc[n_letras:fin_fecha]):
+            errores.append("Los 6 caracteres de la fecha no son numeros")
+        if len(rfc) == longitud and not re.match(r"^[A-Z0-9]{3}$", rfc[fin_fecha:]):
+            errores.append("Ultimos 3 caracteres (homoclave) no son alfanumericos")
         return "; ".join(errores) if errores else None
     return f
 
@@ -263,13 +381,40 @@ _VARIANTES_MX = {normalizar_texto(v).upper() for v in ("Mexico", "Mexicana", "Me
 
 def r_entidad_federativa_mx() -> Regla:
     def f(valor, ctx):
+        pais = ctx.get("pais_nacimiento") or ctx.get("Pais_nacimiento")
+        extranjero = not es_vacio(pais) and normalizar_texto(str(pais)).upper() not in _VARIANTES_MX
+        # No aplica a extranjeros: ni se exige llena ni se valida el estado.
+        if extranjero:
+            return None
         if es_vacio(valor):
             return "Entidad federativa vacia"
-        pais = ctx.get("pais_nacimiento") or ctx.get("Pais_nacimiento")
-        # No aplica a extranjeros: solo se valida el estado si el país es México.
-        if not es_vacio(pais) and normalizar_texto(str(pais)).upper() in _VARIANTES_MX:
-            if normalizar_texto(str(valor)).upper() not in ESTADOS_MEXICANOS_NORM:
-                return f"Entidad '{valor}' no valida para Mexico"
+        if normalizar_texto(str(valor)).upper() not in ESTADOS_MEXICANOS_NORM:
+            return f"Entidad '{valor}' no valida para Mexico"
+        return None
+    return f
+
+
+def r_consistencia_nacimiento(campo_pais: str = "", campo_nacionalidad: str = "") -> Regla:
+    """Si el valor propio es un estado mexicano valido pero el pais y/o la
+    nacionalidad (otros campos logicos, via ctx) indican que NO es Mexico,
+    marca una inconsistencia. Deja `campo_pais`/`campo_nacionalidad` vacios
+    para omitir esa comparacion."""
+    def f(valor, ctx):
+        if es_vacio(valor):
+            return None
+        if normalizar_texto(str(valor)).upper() not in ESTADOS_MEXICANOS_NORM:
+            return None
+        problemas = []
+        if campo_pais:
+            pais = ctx.get(campo_pais)
+            if not es_vacio(pais) and normalizar_texto(str(pais)).upper() not in _VARIANTES_MX:
+                problemas.append(f"pais '{pais}' no es Mexico")
+        if campo_nacionalidad:
+            nac = ctx.get(campo_nacionalidad)
+            if not es_vacio(nac) and normalizar_texto(str(nac)).upper() not in _VARIANTES_MX:
+                problemas.append(f"nacionalidad '{nac}' no es Mexico")
+        if problemas:
+            return "Inconsistencia con entidad federativa mexicana: " + "; ".join(problemas)
         return None
     return f
 
@@ -337,16 +482,48 @@ CATALOGO: dict[str, ReglaCatalogo] = {
         r_edad_entre, parametros=[Parametro("min_anios", "int", "Edad minima", 18),
                                   Parametro("max_anios", "int", "Edad maxima", 120)]),
     "fecha_valida": ReglaCatalogo("fecha_valida", "Fecha valida", "Fecha parseable.", r_fecha_valida),
+    "fecha_no_futura": ReglaCatalogo("fecha_no_futura", "Fecha no futura",
+        "Rechaza fechas posteriores a hoy.", r_fecha_no_futura),
+    "fecha_no_anterior_a": ReglaCatalogo("fecha_no_anterior_a", "Fecha no anterior a otro campo",
+        "Compara contra otra fecha de la misma fila (p. ej. termino >= inicio).",
+        r_fecha_no_anterior_a,
+        parametros=[Parametro("campo_referencia", "str", "Campo logico de referencia", "")]),
+    "debe_estar_vacio": ReglaCatalogo("debe_estar_vacio", "Debe estar vacio",
+        "Opuesto de 'No vacio'; util junto con una condicion.", r_debe_estar_vacio),
+    "al_menos_uno_de": ReglaCatalogo("al_menos_uno_de", "Al menos uno de (varios campos)",
+        "Error solo si este campo Y todos los listados estan vacios.",
+        r_al_menos_uno_de, parametros=[Parametro("campos", "lista", "Otros campos logicos (coma)", [])]),
+    "direccion_completa": ReglaCatalogo("direccion_completa", "Direccion dividida en columnas",
+        "Exige campos obligatorios y, opcional, 'al menos uno de' (ciudad o alcaldia).",
+        r_direccion_completa,
+        parametros=[Parametro("campos_obligatorios", "lista", "Campos obligatorios (coma)", []),
+                    Parametro("campos_ciudad_alcaldia", "lista",
+                              "Ciudad/alcaldia: al menos uno (coma, opcional)", [])]),
     "valor_en": ReglaCatalogo("valor_en", "Valor en lista", "Pertenece a un conjunto.",
         r_valor_en, parametros=[Parametro("opciones", "lista", "Opciones (coma)", []),
                                 Parametro("normalizar", "str", "Normalizar (si/no)", "si")]),
     "curp": ReglaCatalogo("curp", "CURP (Mexico)",
         "18 alfanumericos; valida genero vs campo 'genero'.", r_curp),
-    "rfc": ReglaCatalogo("rfc", "RFC fisica (Mexico)", "13: 4 letras, 6 digitos, 3 alfanum.", r_rfc),
+    "rfc": ReglaCatalogo("rfc", "RFC (Mexico)",
+        "13 (fisica, 4 letras) o 12 (moral, 3 letras); 6 digitos, homoclave.",
+        r_rfc, parametros=[Parametro("tipo_persona", "str", "Tipo (fisica/moral)", "fisica")]),
     "entidad_federativa_mx": ReglaCatalogo("entidad_federativa_mx", "Entidad federativa (Mexico)",
         "Estado valido si pais es Mexico.", r_entidad_federativa_mx),
+    "consistencia_nacimiento": ReglaCatalogo("consistencia_nacimiento",
+        "Consistencia entidad/pais/nacionalidad",
+        "Si el campo es un estado mexicano valido, exige que pais y/o "
+        "nacionalidad (otros campos) tambien indiquen Mexico.",
+        r_consistencia_nacimiento,
+        parametros=[Parametro("campo_pais", "str", "Campo logico de pais (opcional)", ""),
+                    Parametro("campo_nacionalidad", "str",
+                              "Campo logico de nacionalidad (opcional)", "")]),
     "pais_valido": ReglaCatalogo("pais_valido", "Pais valido (ISO)",
         "Pais reconocido por nombre, ISO alfa-2/3 o clave numerica.", r_pais_valido),
+    "mismo_valor_en": ReglaCatalogo("mismo_valor_en", "Mismo valor en (consistencia)",
+        "Filas que comparten valor en este campo deben compartir el mismo "
+        "valor en el campo de referencia (p. ej. mismo CURP -> mismo nombre).",
+        lambda: None, ambito="relacion",
+        parametros=[Parametro("campo_referencia", "str", "Campo logico de referencia", "")]),
 }
 
 
@@ -355,4 +532,17 @@ def construir(regla_cfg) -> Regla:
     params = dict(regla_cfg.parametros)
     if regla_cfg.id == "valor_en" and isinstance(params.get("normalizar"), str):
         params["normalizar"] = params["normalizar"].strip().lower() in ("si", "true", "1")
-    return meta.constructor(**params)
+    fn = meta.constructor(**params)
+    condiciones = getattr(regla_cfg, "condiciones", None)
+    if not condiciones:
+        return fn
+    negar = getattr(regla_cfg, "condiciones_negar", False)
+
+    def f(valor, ctx, _fn=fn, _cond=condiciones, _neg=negar):
+        cumple = _condiciones_cumplen(_cond, ctx)
+        if _neg:
+            cumple = not cumple
+        if not cumple:
+            return None
+        return _fn(valor, ctx)
+    return f

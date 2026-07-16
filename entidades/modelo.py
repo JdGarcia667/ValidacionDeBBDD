@@ -9,16 +9,47 @@ from typing import Any
 
 
 @dataclass
+class Condicion:
+    """Condición de aplicación de una regla: 'aplica si [campo] [operador] [valor]'.
+
+    Operadores: '=', '!=', 'contiene', 'no_contiene', 'vacio', 'no_vacio',
+    'en_lista', 'no_en_lista' (valor = lista separada por comas). `campo` es
+    el nombre lógico de OTRO campo de la misma entidad (resuelto vía
+    Contexto.get en entidades/reglas.py).
+    """
+    campo: str
+    operador: str
+    valor: str = ""
+
+    def to_dict(self) -> dict:
+        return {"campo": self.campo, "operador": self.operador, "valor": self.valor}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Condicion":
+        return cls(campo=d["campo"], operador=d["operador"], valor=d.get("valor", ""))
+
+
+@dataclass
 class ReglaConfig:
     id: str
     parametros: dict[str, Any] = field(default_factory=dict)
+    # Condiciones (AND) que gatean si la regla se evalúa en cada fila.
+    # `condiciones_negar=True` niega el AND completo (De Morgan: permite
+    # expresar "aplica salvo que se cumplan TODAS", p. ej. "opcional solo si
+    # es persona moral Y extranjera").
+    condiciones: list[Condicion] = field(default_factory=list)
+    condiciones_negar: bool = False
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "parametros": self.parametros}
+        return {"id": self.id, "parametros": self.parametros,
+                "condiciones": [c.to_dict() for c in self.condiciones],
+                "condiciones_negar": self.condiciones_negar}
 
     @classmethod
     def from_dict(cls, d: dict) -> "ReglaConfig":
-        return cls(id=d["id"], parametros=d.get("parametros", {}) or {})
+        return cls(id=d["id"], parametros=d.get("parametros", {}) or {},
+                   condiciones=[Condicion.from_dict(c) for c in d.get("condiciones", [])],
+                   condiciones_negar=bool(d.get("condiciones_negar", False)))
 
 
 @dataclass
@@ -116,6 +147,10 @@ class EntidadConfig:
     # columna 'moneda' (rol "moneda" en op_campos) que indican dólares.
     op_valores_cheque_caja: list[str] = field(default_factory=list)
     op_valores_moneda_usd: list[str] = field(default_factory=list)
+    # Activa el diálogo de configuración de operaciones estilo Banco (moneda/
+    # agrupación/filtros de monto con operador libre), aun si la entidad no
+    # define límites de operación por nivel.
+    op_filtros_habilitado: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -134,6 +169,7 @@ class EntidadConfig:
             "op_valores_efectivo": list(self.op_valores_efectivo),
             "op_valores_cheque_caja": list(self.op_valores_cheque_caja),
             "op_valores_moneda_usd": list(self.op_valores_moneda_usd),
+            "op_filtros_habilitado": self.op_filtros_habilitado,
         }
 
     @classmethod
@@ -154,4 +190,5 @@ class EntidadConfig:
             op_valores_efectivo=list(d.get("op_valores_efectivo", [])),
             op_valores_cheque_caja=list(d.get("op_valores_cheque_caja", [])),
             op_valores_moneda_usd=list(d.get("op_valores_moneda_usd", [])),
+            op_filtros_habilitado=bool(d.get("op_filtros_habilitado", False)),
         )

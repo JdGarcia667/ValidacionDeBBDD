@@ -25,8 +25,11 @@ from entidades.registro import (
     listar_entidades, cargar_entidad, guardar_entidad, eliminar_entidad,
 )
 from entidades.mapeo import auto_mapear
-from entidades.modelo import EntidadConfig, CampoConfig, ReglaConfig, RequisitoNivel
-from entidades.reglas import CATALOGO
+from entidades.modelo import (
+    EntidadConfig, CampoConfig, ReglaConfig, RequisitoNivel, LimiteOperacion, Condicion,
+)
+from entidades.reglas import CATALOGO, OPERADORES_CONDICION
+from entidades.plantillas import plantilla_banco
 from core.report_generator import ReportGenerator
 from core import multi_loader as ml
 from ui.dialogo_operaciones import ConfigOperacionesDialog
@@ -622,10 +625,23 @@ class App:
             for rol, dd in self.op_dd.items():
                 dd.value = existing.op_campos.get(rol) or NO_MAPEAR
 
+        self.chk_filtros_op = ft.Checkbox(
+            label="Habilitar filtros de monto en operaciones (como Banco)",
+            value=(existing.op_filtros_habilitado if existing else False))
+
         self._editando_nombre_original = existing.nombre if existing else None
 
+        acciones_ayuda = [ft.TextButton("Ver catálogo de validaciones", icon=ft.Icons.MENU_BOOK,
+                                        on_click=lambda e: self._ver_catalogo_validaciones())]
+        if existing is None:
+            acciones_ayuda.append(ft.TextButton(
+                "Empezar desde plantilla de Banco", icon=ft.Icons.CONTENT_COPY,
+                on_click=lambda e: self._cargar_plantilla_banco()))
+
         cuerpo = ft.Container(width=640, content=ft.Column([
-            self.nuevo_nombre, self.nuevo_desc, ft.Divider(),
+            self.nuevo_nombre, self.nuevo_desc,
+            ft.Row(acciones_ayuda, wrap=True),
+            ft.Divider(),
             ft.Text("Campos de CLIENTES", weight=ft.FontWeight.BOLD),
             self.lista_cli,
             ft.TextButton("Agregar campo de cliente", icon=ft.Icons.ADD,
@@ -663,6 +679,13 @@ class App:
             self.lista_limites,
             ft.TextButton("Agregar límite de operación", icon=ft.Icons.ADD,
                           on_click=lambda e: self._editar_limite_op()),
+            ft.Divider(),
+            self.chk_filtros_op,
+            ft.Text("Al validar, se pedirá moneda de análisis, agrupación y filtros de "
+                    "monto con operador libre (>, <, >=, <=) sobre el total agrupado, "
+                    "igual que en Banco. Se activa automáticamente si defines límites "
+                    "de operación (para pedir los archivos de tasas).",
+                    size=11, color=TEXTO_MUTED),
         ], scroll=ft.ScrollMode.AUTO, height=460))
 
         self.dlg_constructor = ft.AlertDialog(
@@ -672,10 +695,76 @@ class App:
                      ft.FilledButton("Guardar", on_click=lambda e: self._guardar_entidad())])
         self._abrir(self.dlg_constructor)
 
+    def _cargar_plantilla_banco(self):
+        """Precarga el constructor con una entidad equivalente a Banco (campos,
+        reglas, requisitos por nivel y límites), lista para renombrar/editar en
+        vez de armar todo desde cero."""
+        self._cerrar(self.dlg_constructor)
+        self._abrir_constructor(existing=plantilla_banco())
+        self._editando_nombre_original = None  # es una entidad nueva, no una edición
+        self._toast("Plantilla de Banco cargada: ponle un nombre y ajusta lo que necesites.")
+
+    def _texto_regla(self, regla: ReglaConfig) -> str:
+        meta = CATALOGO[regla.id]
+        partes = [meta.etiqueta]
+        if regla.parametros:
+            params_txt = ", ".join(f"{k}={v}" for k, v in regla.parametros.items() if v not in (None, "", []))
+            if params_txt:
+                partes[0] += f" ({params_txt})"
+        if regla.condiciones:
+            cond_txt = " y ".join(f"{c.campo} {c.operador} '{c.valor}'" for c in regla.condiciones)
+            prefijo = "salvo que" if regla.condiciones_negar else "solo si"
+            partes.append(f"[{prefijo} {cond_txt}]")
+        return " ".join(partes)
+
+    def _ver_catalogo_validaciones(self):
+        """Referencia: todas las reglas disponibles + cómo las usa Banco en cada
+        campo (misma función `plantilla_banco()` que arma la plantilla, para que
+        nunca quede desincronizada de lo que realmente se puede reutilizar)."""
+        secciones = [ft.Text("Reglas disponibles para cualquier entidad", weight=ft.FontWeight.BOLD)]
+        for rid, meta in CATALOGO.items():
+            extra = f" · ámbito: {meta.ambito}" if meta.ambito != "valor" else ""
+            params = (", ".join(p.nombre for p in meta.parametros)) if meta.parametros else ""
+            linea = f"• {meta.etiqueta} ({rid}){extra}"
+            if params:
+                linea += f" — parámetros: {params}"
+            secciones.append(ft.Text(linea, size=12))
+            secciones.append(ft.Text(f"   {meta.descripcion}", size=11, color=TEXTO_MUTED))
+
+        secciones.append(ft.Divider())
+        secciones.append(ft.Text(
+            "Cómo las combina Banco, campo por campo (referencia — usa "
+            "'Empezar desde plantilla de Banco' para precargar esto tal cual)",
+            weight=ft.FontWeight.BOLD))
+        banco = plantilla_banco()
+        for etiqueta, campos in (("CLIENTES", banco.campos_cliente), ("OPERACIONES", banco.campos_operacion)):
+            secciones.append(ft.Text(etiqueta, weight=ft.FontWeight.BOLD, size=12))
+            for c in campos:
+                if not c.reglas:
+                    continue
+                reglas_txt = "; ".join(self._texto_regla(r) for r in c.reglas)
+                secciones.append(ft.Text(f"• {c.logico}: {reglas_txt}", size=12))
+        secciones.append(ft.Text(
+            f"Requisitos por nivel de cuenta: {len(banco.requisitos_cliente)} reglas definidas "
+            f"(campo de nivel: '{banco.campo_nivel}', tipo persona: '{banco.campo_tipo_persona}', "
+            f"modalidad: '{banco.campo_modalidad}').", size=12))
+        secciones.append(ft.Text(
+            f"Límites de operación por nivel (montos): {len(banco.limites_operacion)} definidos "
+            f"(abonos en UDIS, efectivo en USD/MXN, cheque de caja, saldo...).", size=12))
+
+        dlg = ft.AlertDialog(
+            modal=True, title=ft.Text("Catálogo de validaciones"),
+            content=ft.Container(width=680, content=ft.Column(
+                secciones, scroll=ft.ScrollMode.AUTO, height=480, spacing=2)),
+            actions=[ft.TextButton("Cerrar", on_click=lambda e: self._cerrar(dlg))])
+        self._abrir(dlg)
+
     def _editar_campo(self, cual: str):
         logico = ft.TextField(label="Campo logico (ej. CURP, monto)", width=320)
         checks = {}
         params_fields = {}
+        # rid -> {"lista": [(tf_campo, dd_op, tf_valor), ...], "negar": ft.Checkbox}
+        cond_state: dict[str, dict] = {}
         controles = []
         for rid, meta in CATALOGO.items():
             chk = ft.Checkbox(label=f"{meta.etiqueta}", value=False)
@@ -686,7 +775,28 @@ class App:
                                   value="" if p.default is None else str(p.default))
                 params_fields[(rid, p.nombre)] = (tf, p)
                 fila.append(tf)
-            controles.append(ft.Row(fila, wrap=True))
+
+            cond_filas = ft.Column(spacing=2)
+            cond_negar = ft.Checkbox(label="Negar (aplica cuando NO se cumplen)", value=False)
+            cond_lista: list[tuple] = []
+            cond_state[rid] = {"lista": cond_lista, "negar": cond_negar}
+
+            def _agregar_condicion(e, _filas=cond_filas, _lista=cond_lista):
+                tf_campo = ft.TextField(label="Campo logico", width=140, dense=True)
+                dd_op = ft.Dropdown(label="Operador", width=140, dense=True, value="=",
+                                    options=[ft.dropdown.Option(o) for o in OPERADORES_CONDICION])
+                tf_valor = ft.TextField(label="Valor", width=140, dense=True)
+                _lista.append((tf_campo, dd_op, tf_valor))
+                _filas.controls.append(ft.Row([tf_campo, dd_op, tf_valor], wrap=True))
+                self.page.update()
+
+            bloque = ft.Column([
+                ft.Row(fila, wrap=True),
+                ft.Row([ft.TextButton("+ Condición 'aplica si...'", on_click=_agregar_condicion),
+                       cond_negar]),
+                cond_filas,
+            ], spacing=0)
+            controles.append(bloque)
 
         def aceptar(e):
             if not logico.value:
@@ -700,7 +810,14 @@ class App:
                 for p in CATALOGO[rid].parametros:
                     tf, meta_p = params_fields[(rid, p.nombre)]
                     params[p.nombre] = self._convertir(tf.value, meta_p)
-                reglas.append(ReglaConfig(id=rid, parametros=params))
+                condiciones = [
+                    Condicion(campo=tf_campo.value.strip(), operador=dd_op.value,
+                             valor=(tf_valor.value or "").strip())
+                    for tf_campo, dd_op, tf_valor in cond_state[rid]["lista"]
+                    if tf_campo.value and dd_op.value
+                ]
+                reglas.append(ReglaConfig(id=rid, parametros=params, condiciones=condiciones,
+                                          condiciones_negar=cond_state[rid]["negar"].value))
             campo = CampoConfig(logico=logico.value.strip(), reglas=reglas)
             destino = self.campos_cli if cual == "cli" else self.campos_ops
             lista = self.lista_cli if cual == "cli" else self.lista_ops
@@ -715,9 +832,11 @@ class App:
 
         dlg = ft.AlertDialog(
             modal=True, title=ft.Text(f"Campo de {'cliente' if cual == 'cli' else 'operacion'}"),
-            content=ft.Container(width=560, content=ft.Column(
-                [logico, ft.Text("Reglas:", weight=ft.FontWeight.BOLD)] + controles,
-                scroll=ft.ScrollMode.AUTO, height=420)),
+            content=ft.Container(width=620, content=ft.Column(
+                [logico, ft.Text("Reglas (cada una puede llevar condiciones 'aplica si...', "
+                                 "referenciando OTROS campos logicos de esta entidad):",
+                                 weight=ft.FontWeight.BOLD, size=12)] + controles,
+                scroll=ft.ScrollMode.AUTO, height=440)),
             actions=[ft.TextButton("Cancelar", on_click=lambda e: self._cerrar(dlg)),
                      ft.FilledButton("Agregar", on_click=aceptar)])
         self._abrir(dlg)
@@ -873,6 +992,11 @@ class App:
             self._toast("Definiste límites de operación: designa al menos los campos "
                         "de FECHA y MONTO.")
             return
+        if self.chk_filtros_op.value and not all(
+                op_campos.get(r) for r in ("fecha", "monto", "cuenta", "tipo_operacion")):
+            self._toast("Filtros de monto habilitados: designa FECHA, MONTO, CUENTA y "
+                        "TIPO OPERACIÓN.")
+            return
         _csv = lambda s: [x.strip() for x in (s or "").split(",") if x.strip()]
         # Sinónimos de nivel: "alias=nivel, alias=nivel".
         aliases_nivel = {}
@@ -893,7 +1017,8 @@ class App:
                             op_valores_abono=_csv(self.tf_abono.value),
                             op_valores_efectivo=_csv(self.tf_efectivo.value),
                             op_valores_cheque_caja=_csv(self.tf_cheque_caja.value),
-                            op_valores_moneda_usd=_csv(self.tf_moneda_usd.value))
+                            op_valores_moneda_usd=_csv(self.tf_moneda_usd.value),
+                            op_filtros_habilitado=self.chk_filtros_op.value)
         try:
             guardar_entidad(cfg)
         except ValueError as ex:
