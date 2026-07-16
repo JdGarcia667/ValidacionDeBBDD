@@ -47,7 +47,10 @@ class App:
         self.page = page
         page.title = "Validacion de BBDD"
         aplicar_tema(page)
-        page.padding = 18
+        # Un poco más de espacio arriba: la etiqueta flotante del Dropdown
+        # "Entidad financiera" del header queda casi pegada al borde superior
+        # y se recorta contra la barra de título con solo el padding parejo.
+        page.padding = ft.Padding(18, 28, 18, 18)
 
         self.entidad = None
         # df_cli/df_ops: DataFrame completo (memoria) o muestra (modo SQLite) o None.
@@ -1049,5 +1052,75 @@ class App:
         self.page.show_dialog(ft.SnackBar(ft.Text(msg)))
 
 
-def main(page: ft.Page):
+SPLASH_WINDOW_SIZE = 320
+APP_WINDOW_SIZE = (1300, 860)
+
+
+async def _mostrar_splash(page: ft.Page) -> None:
+    """Pantalla de bienvenida (~3s): ventana sin marco y transparente, para
+    que solo se vea el logo circular (assets/splash.png ya tiene fondo
+    transparente) flotando sobre el escritorio, con fade-in + zoom, hold y
+    fade-out."""
+    page.title = "Validacion de BBDD"
+    page.padding = 0
+
+    # Ventana sin título/bordes y transparente: sin esto se ve el rectángulo
+    # de la ventana detrás del círculo. "shadow=False" evita que quede un
+    # contorno/sombra rectangular visible aunque el relleno sea transparente.
+    page.window.frameless = True
+    page.window.shadow = False
+    page.window.bgcolor = ft.Colors.TRANSPARENT
+    page.bgcolor = ft.Colors.TRANSPARENT
+    page.window.width = SPLASH_WINDOW_SIZE
+    page.window.height = SPLASH_WINDOW_SIZE
+    page.update()   # aplica el resize ANTES de centrar; si no, center() usa el tamaño viejo
+    await asyncio.sleep(0.05)  # deja que el SO termine de aplicar frameless/resize
+    await page.window.center()
+
+    logo = ft.Container(
+        content=ft.Image(src="splash.png", width=280, fit=ft.BoxFit.CONTAIN),
+        opacity=0, scale=0.85,
+        animate_opacity=ft.Animation(500, ft.AnimationCurve.EASE_OUT),
+        animate_scale=ft.Animation(500, ft.AnimationCurve.EASE_OUT),
+    )
+    page.add(ft.Container(content=logo, alignment=ft.Alignment.CENTER, expand=True))
+    page.update()
+
+    await asyncio.sleep(0.05)  # deja pintar el primer frame (opacity 0) antes de animar
+    logo.opacity = 1
+    logo.scale = 1.0
+    page.update()
+
+    await asyncio.sleep(2.1)   # logo visible (0.5 + 2.1 + 0.4 = 3s en total)
+
+    logo.opacity = 0
+    page.update()
+    await asyncio.sleep(0.4)   # fade-out
+
+    page.controls.clear()
+
+    # Deshacer lo específico del splash: la app real necesita ventana normal
+    # (con marco, tamaño de trabajo, centrada, no transparente). aplicar_tema()
+    # en App.__init__ vuelve a fijar bgcolor/ícono.
+    #
+    # OJO con el ORDEN: se redimensiona y se CENTRA primero, todavía en modo
+    # frameless (geometría simple, sin barra de título de por medio), y RECIÉN
+    # DESPUÉS se restaura el marco. Centrar DESPUÉS de quitar "frameless"
+    # (como se hacía antes) deja que el cálculo de centrado corra mientras el
+    # SO todavía está agregando la barra de título, y la ventana terminaba mal
+    # posicionada (el menú "cortado y fuera de la ventana" reportado antes).
+    # Restaurar el marco al final puede correr el contenido unos pixeles (alto
+    # de la barra de título), pero es un desvío menor vs. quedar mal centrada.
+    page.window.width, page.window.height = APP_WINDOW_SIZE
+    page.update()
+    await asyncio.sleep(0.05)
+    await page.window.center()
+    await asyncio.sleep(0.05)  # deja asentar la posición antes de agregar el marco
+    page.window.frameless = False
+    page.window.shadow = True
+    page.update()
+
+
+async def main(page: ft.Page):
+    await _mostrar_splash(page)
     App(page)
